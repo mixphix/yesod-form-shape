@@ -1,0 +1,48 @@
+cabal-version:   3.0
+name:            yesod-form-shape
+version:         0.0.0
+license:         MIT
+license-file:    LICENSE
+author:          Melanie Brown
+maintainer:      brown.m@pm.me
+category:        Web
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+homepage:        https://github.com/mixphix/yesod-form-shape
+synopsis:        Type classes for working with HTML forms in Yesod
+description:
+  Please see the README at https://github.com/mixphix/yesod-form-shape
+
+library
+  default-language:   GHC2021
+  ghc-options:        -Wall -Wno-unticked-promoted-constructors
+  hs-source-dirs:     lib
+  default-extensions:
+    BlockArguments
+    DataKinds
+    DefaultSignatures
+    DerivingStrategies
+    LambdaCase
+    MultiWayIf
+    OverloadedRecordDot
+    OverloadedStrings
+    PatternSynonyms
+    QuasiQuotes
+    RecordWildCards
+    TypeFamilies
+    TypeFamilyDependencies
+    ViewPatterns
+
+  exposed-modules:
+    Yesod.Form.Shape
+
+  build-depends:
+    , base
+    , byteable
+    , containers
+    , http-types
+    , mtl
+    , text
+    , wai
+    , yesod-core
+    , yesod-form
