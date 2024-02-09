@@ -41,6 +41,7 @@ library
     , byteable
     , containers
     , http-types
+    , invariant
     , mtl
     , text
     , wai

@@ -29,6 +29,7 @@ import Data.Function ((&))
 import Data.Functor ((<&>))
 import Data.Functor.Const (Const (Const))
 import Data.Functor.Identity (Identity (..))
+import Data.Functor.Invariant
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..), nonEmpty, toList)
 import Data.Map qualified as Map
@@ -84,18 +85,28 @@ instance Shaped Free where shaped = FreeS
 
 -- |
 -- @
--- type family FieldShape shape = x | x -> shape where
+-- type family FieldShape shape = ty | ty -> shape where
 --   FieldShape Omit = Maybe
 --   FieldShape Need = Identity
 --   FieldShape Many = NonEmpty
 --   FieldShape Free = []
 -- @
 type FieldShape :: ShapeType -> Type -> Type
-type family FieldShape shape = x | x -> shape where
+type family FieldShape shape = ty | ty -> shape where
   FieldShape Omit = Maybe
   FieldShape Need = Identity
   FieldShape Many = NonEmpty
   FieldShape Free = []
+
+shapeClass ::
+  forall c shape.
+  (Shaped shape, c Maybe, c Identity, c NonEmpty, c []) =>
+  (forall r. ((c (FieldShape shape)) => r) -> r)
+shapeClass x = case shaped @shape of
+  OmitS -> x
+  NeedS -> x
+  ManyS -> x
+  FreeS -> x
 
 shapeAttrs :: forall shape. (Shaped shape) => Const [(Text, Text)] (Shape shape)
 shapeAttrs = case shaped @shape of
@@ -106,31 +117,42 @@ shapeAttrs = case shaped @shape of
 
 -- |
 -- @
--- data FieldFor app shape x = Field
+-- data FieldFor app shape ty = Field
 --   { enctype :: Enctype
 --   , view ::
 --       [(Text, Text)] ->
---       Either Text (FieldShape shape x) ->
+--       Either Text (FieldShape shape ty) ->
 --       WidgetFor app ()
 --   , parse ::
 --       [Text] ->
 --       [FileInfo] ->
---       HandlerFor app (Either (SomeMessage app) (FieldShape shape x))
+--       HandlerFor app (Either (SomeMessage app) (FieldShape shape ty))
 --   }
 -- @
-data FieldFor app shape x = Field
+data FieldFor app shape ty = Field
   { enctype :: Enctype
   , view ::
       [(Text, Text)] ->
-      Either Text (FieldShape shape x) ->
+      Either Text (FieldShape shape ty) ->
       WidgetFor app ()
   , parse ::
       [Text] ->
       [FileInfo] ->
-      HandlerFor app (Either (SomeMessage app) (FieldShape shape x))
+      HandlerFor app (Either (SomeMessage app) (FieldShape shape ty))
   }
 
-unsupported :: Shape shape -> [Char] -> x
+instance (Shaped shape) => Invariant (FieldFor app shape) where
+  invmap ::
+    (ty -> tz) -> (tz -> ty) -> FieldFor app shape ty -> FieldFor app shape tz
+  invmap source target field =
+    field
+      { view = \attrs evalue -> shapeClass @Invariant @shape do
+          field.view attrs (invmap target source <$> evalue)
+      , parse = \myEnv myFileEnv -> shapeClass @Invariant @shape do
+          field.parse myEnv myFileEnv <&> fmap (invmap source target)
+      }
+
+unsupported :: Shape shape -> [Char] -> ty
 unsupported shape ty =
   error $ "Shape " <> show shape <> " unsupported for " <> ty
 
@@ -138,9 +160,9 @@ parseSingle ::
   (RenderMessage app FormMessage) =>
   Shape shape ->
   [Char] ->
-  ([Char] -> Maybe x) ->
+  ([Char] -> Maybe ty) ->
   [Text] ->
-  HandlerFor app (Either (SomeMessage app) (FieldShape shape x))
+  HandlerFor app (Either (SomeMessage app) (FieldShape shape ty))
 parseSingle shape ty f = \case
   [] -> pure case shape of
     OmitS -> Right Nothing
@@ -192,13 +214,13 @@ type FormFor app =
     (HandlerFor app)
 
 input ::
-  forall shape x app.
+  forall shape ty app.
   (RenderMessage app FormMessage, Shaped shape) =>
   WidgetFor app () ->
-  FieldFor app shape x ->
+  FieldFor app shape ty ->
   [(Text, Text)] ->
-  Maybe (FieldShape shape x) ->
-  FormFor app (FormResult (FieldShape shape x), WidgetFor app ())
+  Maybe (FieldShape shape ty) ->
+  FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
 input label field attributes initial = do
   let Const sAttrs = shapeAttrs @shape
   tell field.enctype
@@ -217,17 +239,17 @@ input label field attributes initial = do
           )
 
 select ::
-  forall shape x app.
-  (RenderMessage app FormMessage, Eq x, Shaped shape) =>
+  forall shape ty app.
+  (RenderMessage app FormMessage, Eq ty, Shaped shape) =>
   WidgetFor app () ->
-  OptionList x ->
+  OptionList ty ->
   [(Text, Text)] ->
-  Maybe (FieldShape shape x) ->
-  FormFor app (FormResult (FieldShape shape x), WidgetFor app ())
+  Maybe (FieldShape shape ty) ->
+  FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
 select label options attributes initial = do
   let Const sAttrs = shapeAttrs @shape
       parse ::
-        [Text] -> HandlerFor app (Either (SomeMessage app) (FieldShape shape x))
+        [Text] -> HandlerFor app (Either (SomeMessage app) (FieldShape shape ty))
       parse myEnv = do
         let olRead = case options of
               OptionList{..} -> olReadExternal
@@ -254,9 +276,9 @@ select label options attributes initial = do
             Nothing -> Left $ SomeMessage ("unknown option: " <> x)
             Just y -> Right y
       view ::
-        [(Text, Text)] -> Either Text (FieldShape shape x) -> WidgetFor app ()
+        [(Text, Text)] -> Either Text (FieldShape shape ty) -> WidgetFor app ()
       view attrs evalue = do
-        let selected :: x -> Bool = case evalue of
+        let selected :: ty -> Bool = case evalue of
               Left _ -> const False
               Right val -> case shaped @shape of
                 OmitS -> maybe (const False) (==) val
@@ -292,9 +314,9 @@ select label options attributes initial = do
           )
 
 runFormWithEnv ::
-  FormFor app x ->
+  FormFor app ty ->
   Maybe (Env, FileEnv) ->
-  HandlerFor app (x, Enctype)
+  HandlerFor app (ty, Enctype)
 runFormWithEnv form envs = do
   app <- getYesod
   langs <- languages
@@ -305,9 +327,9 @@ type Csrf form = Html -> form
 
 runFormPostWithEnv ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app (FormResult x, WidgetFor app ())) ->
+  Csrf (FormFor app (FormResult ty, WidgetFor app ())) ->
   Maybe (Env, FileEnv) ->
-  HandlerFor app ((FormResult x, WidgetFor app ()), Enctype)
+  HandlerFor app ((FormResult ty, WidgetFor app ()), Enctype)
 runFormPostWithEnv cform envs = do
   YesodRequest{reqToken} <- getRequest
   app <- getYesod
@@ -333,7 +355,7 @@ runFormPostWithEnv cform envs = do
 
 generateFormPost ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app (FormResult x, WidgetFor app ())) ->
+  Csrf (FormFor app (FormResult ty, WidgetFor app ())) ->
   HandlerFor app (WidgetFor app (), Enctype)
 generateFormPost cform = first snd <$> runFormPostWithEnv cform Nothing
 
@@ -347,8 +369,8 @@ methodEnv method = do
 
 runFormPost ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app (FormResult x, WidgetFor app ())) ->
-  HandlerFor app ((FormResult x, WidgetFor app ()), Enctype)
+  Csrf (FormFor app (FormResult ty, WidgetFor app ())) ->
+  HandlerFor app ((FormResult ty, WidgetFor app ()), Enctype)
 runFormPost cform = runFormPostWithEnv cform =<< methodEnv methodPost
 
 getKey :: Text
@@ -356,25 +378,25 @@ getKey = "_hasdata"
 
 runFormGetWithEnv ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app x) ->
+  Csrf (FormFor app ty) ->
   Maybe (Env, FileEnv) ->
-  HandlerFor app (x, Enctype)
+  HandlerFor app (ty, Enctype)
 runFormGetWithEnv cform =
   runFormWithEnv $ cform [shamlet|<input type="hidden" name="#{getKey}">|]
 
 generateFormGet ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app (FormResult x, WidgetFor app ())) ->
+  Csrf (FormFor app (FormResult ty, WidgetFor app ())) ->
   HandlerFor app (WidgetFor app (), Enctype)
 generateFormGet cform = first snd <$> runFormGetWithEnv cform Nothing
 
 runFormGet ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app (FormResult x, WidgetFor app ())) ->
-  HandlerFor app ((FormResult x, WidgetFor app ()), Enctype)
+  Csrf (FormFor app (FormResult ty, WidgetFor app ())) ->
+  HandlerFor app ((FormResult ty, WidgetFor app ()), Enctype)
 runFormGet cform = runFormGetWithEnv cform =<< methodEnv methodGet
 
-identifyForm :: Text -> Csrf (FormFor app x) -> Csrf (FormFor app x)
+identifyForm :: Text -> Csrf (FormFor app ty) -> Csrf (FormFor app ty)
 identifyForm me cform csrf = do
   let i = "_identifier"
       amHere = elem me . Map.findWithDefault [] i
