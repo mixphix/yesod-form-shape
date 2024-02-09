@@ -3,6 +3,7 @@ module Yesod.Form.Shape
   , FieldShape
   , Shape (..)
   , ShapeType (..)
+  , shapeInstance
   , input
   , select
   , singleField
@@ -98,11 +99,11 @@ type family FieldShape shape = ty | ty -> shape where
   FieldShape Many = NonEmpty
   FieldShape Free = []
 
-shapeClass ::
+shapeInstance ::
   forall c shape.
   (Shaped shape, c Maybe, c Identity, c NonEmpty, c []) =>
   (forall r. ((c (FieldShape shape)) => r) -> r)
-shapeClass x = case shaped @shape of
+shapeInstance x = case shaped @shape of
   OmitS -> x
   NeedS -> x
   ManyS -> x
@@ -146,9 +147,9 @@ instance (Shaped shape) => Invariant (FieldFor app shape) where
     (ty -> tz) -> (tz -> ty) -> FieldFor app shape ty -> FieldFor app shape tz
   invmap source target field =
     field
-      { view = \attrs evalue -> shapeClass @Invariant @shape do
+      { view = \attrs evalue -> shapeInstance @Invariant @shape do
           field.view attrs (invmap target source <$> evalue)
-      , parse = \myEnv myFileEnv -> shapeClass @Invariant @shape do
+      , parse = \myEnv myFileEnv -> shapeInstance @Invariant @shape do
           field.parse myEnv myFileEnv <&> fmap (invmap source target)
       }
 
