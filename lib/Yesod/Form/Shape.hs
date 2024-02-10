@@ -4,7 +4,9 @@ module Yesod.Form.Shape
   , Shape (..)
   , ShapeType (..)
   , shapeInstance
+  , DefaultField (..)
   , input
+  , input'
   , select
   , singleField
   , textField
@@ -53,6 +55,7 @@ import Yesod.Form
   , Ints (IntSingle)
   , Option (..)
   , OptionList (..)
+  , Textarea (..)
   , newFormIdent
   )
 
@@ -227,6 +230,39 @@ textField shape = do
         xs -> pure $ Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
     }
 
+class (RenderMessage app FormMessage) => DefaultField app shape ty where
+  defaultField :: FieldFor app shape ty
+
+instance (RenderMessage app FormMessage) => DefaultField app Omit Int where
+  defaultField = singleField OmitS
+
+instance (RenderMessage app FormMessage) => DefaultField app Need Int where
+  defaultField = singleField NeedS
+
+instance (RenderMessage app FormMessage) => DefaultField app Omit Integer where
+  defaultField = singleField OmitS
+
+instance (RenderMessage app FormMessage) => DefaultField app Need Integer where
+  defaultField = singleField NeedS
+
+instance (RenderMessage app FormMessage) => DefaultField app Omit Double where
+  defaultField = singleField OmitS
+
+instance (RenderMessage app FormMessage) => DefaultField app Need Double where
+  defaultField = singleField NeedS
+
+instance (RenderMessage app FormMessage) => DefaultField app Omit Text where
+  defaultField = textField OmitS
+
+instance (RenderMessage app FormMessage) => DefaultField app Need Text where
+  defaultField = textField NeedS
+
+instance (RenderMessage app FormMessage) => DefaultField app Omit Textarea where
+  defaultField = invmap Textarea unTextarea (textField OmitS)
+
+instance (RenderMessage app FormMessage) => DefaultField app Need Textarea where
+  defaultField = invmap Textarea unTextarea (textField NeedS)
+
 -- |
 -- @
 -- type FormFor app =
@@ -267,6 +303,15 @@ input label field attributes initial = do
           ( FormFailure [renderMessage app langs msg]
           , Left (Text.intercalate ", " myEnv)
           )
+
+input' ::
+  forall shape ty app.
+  (RenderMessage app FormMessage, Shaped shape, DefaultField app shape ty) =>
+  WidgetFor app () ->
+  [(Text, Text)] ->
+  Maybe (FieldShape shape ty) ->
+  FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
+input' label attributes initial = input label defaultField attributes initial
 
 select ::
   forall shape ty app.
