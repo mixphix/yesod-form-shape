@@ -289,22 +289,22 @@ select label options attributes initial = do
           OmitS -> pure case myEnv of
             [] -> Right Nothing
             [x] -> case olRead x of
-              Nothing -> Left $ SomeMessage ("unknown option: " <> x)
+              Nothing -> Left $ SomeMessage (MsgInvalidEntry x)
               Just y -> Right (Just y)
-            _ -> Left "multiple given when one expected"
+            _ -> Left $ SomeMessage (MsgInvalidEntry "Duplicated")
           NeedS -> pure case myEnv of
-            [] -> Left "input is required"
+            [] -> Left $ SomeMessage MsgValueRequired
             [x] -> case olRead x of
-              Nothing -> Left $ SomeMessage ("unknown option: " <> x)
+              Nothing -> Left $ SomeMessage (MsgInvalidEntry x)
               Just y -> Right (Identity y)
-            _ -> Left "multiple given when one expected"
+            _ -> Left $ SomeMessage (MsgInvalidEntry "Duplicated")
           ManyS -> pure case nonEmpty myEnv of
-            Nothing -> Left "input is required"
+            Nothing -> Left $ SomeMessage MsgValueRequired
             Just xs -> for xs \x -> case olRead x of
-              Nothing -> Left $ SomeMessage ("unknown option: " <> x)
+              Nothing -> Left $ SomeMessage (MsgInvalidEntry x)
               Just y -> Right y
           FreeS -> pure $ for myEnv \x -> case olRead x of
-            Nothing -> Left $ SomeMessage ("unknown option: " <> x)
+            Nothing -> Left $ SomeMessage (MsgInvalidEntry x)
             Just y -> Right y
       view ::
         [(Text, Text)] -> Either Text (FieldShape shape ty) -> WidgetFor app ()
