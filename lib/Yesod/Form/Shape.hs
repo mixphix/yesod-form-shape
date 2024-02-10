@@ -289,10 +289,11 @@ input ::
   FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
 input label field attributes initial = do
   let Const sAttrs = shapeAttrs @shape
+      view evalue = label <> field.view (sAttrs <> attributes) evalue
   tell field.enctype
   (envs, app, langs) <- ask
   name <- maybe newFormIdent pure (lookup "name" attributes)
-  fmap ((label <>) . field.view (sAttrs <> attributes)) <$> case envs of
+  second view <$> case envs of
     Nothing -> pure (FormMissing, maybe (Left "") Right initial)
     Just (env, fileEnv) -> do
       let myEnv = Map.findWithDefault [] name env
@@ -311,7 +312,7 @@ input' ::
   [(Text, Text)] ->
   Maybe (FieldShape shape ty) ->
   FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
-input' label attributes initial = input label defaultField attributes initial
+input' label = input label defaultField
 
 select ::
   forall shape ty app.
@@ -321,39 +322,10 @@ select ::
   [(Text, Text)] ->
   Maybe (FieldShape shape ty) ->
   FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
-select label options attributes initial = do
-  let parse ::
-        [Text] ->
-        [FileInfo] ->
-        HandlerFor app (Either (SomeMessage app) (FieldShape shape ty))
-      parse myEnv _ = do
-        let olRead = case options of
-              OptionList{..} -> olReadExternal
-              OptionListGrouped{..} -> olReadExternalGrouped
-        case shaped @shape of
-          OmitS -> pure case myEnv of
-            [] -> Right Nothing
-            [x] -> case olRead x of
-              Nothing -> Left $ SomeMessage (MsgInvalidEntry x)
-              Just y -> Right (Just y)
-            _ -> Left $ SomeMessage (MsgInvalidEntry "Duplicated")
-          NeedS -> pure case myEnv of
-            [] -> Left $ SomeMessage MsgValueRequired
-            [x] -> case olRead x of
-              Nothing -> Left $ SomeMessage (MsgInvalidEntry x)
-              Just y -> Right (Identity y)
-            _ -> Left $ SomeMessage (MsgInvalidEntry "Duplicated")
-          ManyS -> pure case nonEmpty myEnv of
-            Nothing -> Left $ SomeMessage MsgValueRequired
-            Just xs -> for xs \x -> case olRead x of
-              Nothing -> Left $ SomeMessage (MsgInvalidEntry x)
-              Just y -> Right y
-          FreeS -> pure $ for myEnv \x -> case olRead x of
-            Nothing -> Left $ SomeMessage (MsgInvalidEntry x)
-            Just y -> Right y
-      view ::
-        [(Text, Text)] -> Either Text (FieldShape shape ty) -> WidgetFor app ()
-      view attrs evalue = do
+select label options = input label do
+  Field
+    { enctype = UrlEncoded
+    , view = \attrs evalue -> do
         let selected :: ty -> Bool = case evalue of
               Left _ -> const False
               Right val -> case shaped @shape of
@@ -375,8 +347,32 @@ select label options attributes initial = do
                       <option :selected option.optionInternalValue:selected value="#{option.optionExternalValue}">
                         #{option.optionDisplay}
         |]
-      enctype = UrlEncoded
-  input label Field{..} attributes initial
+    , parse = \myEnv _ -> do
+        let olRead = case options of
+              OptionList{..} -> olReadExternal
+              OptionListGrouped{..} -> olReadExternalGrouped
+        case shaped @shape of
+          OmitS -> pure case myEnv of
+            [] -> Right Nothing
+            [x] -> case olRead x of
+              Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
+              Just y -> Right (Just y)
+            _ -> Left (SomeMessage $ MsgInvalidEntry "Duplicated")
+          NeedS -> pure case myEnv of
+            [] -> Left (SomeMessage MsgValueRequired)
+            [x] -> case olRead x of
+              Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
+              Just y -> Right (Identity y)
+            _ -> Left (SomeMessage $ MsgInvalidEntry "Duplicated")
+          ManyS -> pure case nonEmpty myEnv of
+            Nothing -> Left (SomeMessage MsgValueRequired)
+            Just xs -> for xs \x -> case olRead x of
+              Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
+              Just y -> Right y
+          FreeS -> pure $ for myEnv \x -> case olRead x of
+            Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
+            Just y -> Right y
+    }
 
 runFormWithEnv ::
   FormFor app ty ->
