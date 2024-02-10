@@ -7,6 +7,7 @@ module Yesod.Form.Shape
   , input
   , select
   , singleField
+  , textField
   , generateFormPost
   , runFormPost
   , generateFormGet
@@ -198,6 +199,34 @@ singleField shape = do
     , parse = \myEnv _ -> parseSingle shape ty readMaybe myEnv
     }
 
+textField ::
+  forall shape app.
+  (RenderMessage app FormMessage) =>
+  Shape shape ->
+  FieldFor app shape Text
+textField shape = do
+  Field
+    { enctype = UrlEncoded
+    , view = \attrs evalue -> do
+        let value :: [Char] = case evalue of
+              Left _ -> ""
+              Right v -> case shape of
+                OmitS -> maybe "" show v
+                NeedS -> show (runIdentity v)
+                _ -> unsupported shape "Text"
+        [whamlet|<input type="number" *{attrs} value="#{value}">|]
+    , parse = \myEnv _ -> case myEnv of
+        [] -> pure case shape of
+          OmitS -> Right Nothing
+          NeedS -> Left (SomeMessage MsgValueRequired)
+          _ -> unsupported shape "Text"
+        [x] -> pure case shape of
+          OmitS -> Right (Just x)
+          NeedS -> Right (Identity x)
+          _ -> unsupported shape "Text"
+        xs -> pure $ Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+    }
+
 -- |
 -- @
 -- type FormFor app =
@@ -248,10 +277,11 @@ select ::
   Maybe (FieldShape shape ty) ->
   FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
 select label options attributes initial = do
-  let Const sAttrs = shapeAttrs @shape
-      parse ::
-        [Text] -> HandlerFor app (Either (SomeMessage app) (FieldShape shape ty))
-      parse myEnv = do
+  let parse ::
+        [Text] ->
+        [FileInfo] ->
+        HandlerFor app (Either (SomeMessage app) (FieldShape shape ty))
+      parse myEnv _ = do
         let olRead = case options of
               OptionList{..} -> olReadExternal
               OptionListGrouped{..} -> olReadExternalGrouped
@@ -300,19 +330,8 @@ select label options attributes initial = do
                       <option :selected option.optionInternalValue:selected value="#{option.optionExternalValue}">
                         #{option.optionDisplay}
         |]
-  tell UrlEncoded
-  (envs, app, langs) <- ask
-  name <- maybe newFormIdent pure (lookup "name" attributes)
-  fmap ((label <>) . view (sAttrs <> attributes)) <$> case envs of
-    Nothing -> pure (FormMissing, maybe (Left "") Right initial)
-    Just (env, _) -> do
-      let myEnv = Map.findWithDefault [] name env
-      lift (parse myEnv) <&> \case
-        Right x -> (FormSuccess x, Right x)
-        Left (SomeMessage msg) ->
-          ( FormFailure [renderMessage app langs msg]
-          , Left (Text.intercalate ", " myEnv)
-          )
+      enctype = UrlEncoded
+  input label Field{..} attributes initial
 
 runFormWithEnv ::
   FormFor app ty ->
