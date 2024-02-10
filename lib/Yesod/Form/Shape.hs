@@ -279,15 +279,31 @@ type FormFor app =
     Ints
     (HandlerFor app)
 
+-- |
+-- @
+-- type Input app shape ty =
+--   -- | label
+--   WidgetFor app () ->
+--   -- | attributes
+--   [(Text, Text)] ->
+--   -- | initial
+--   Maybe (FieldShape shape ty) ->
+--   FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
+-- @
+type Input app shape ty =
+  -- | label
+  WidgetFor app () ->
+  -- | attributes
+  [(Text, Text)] ->
+  -- | initial
+  Maybe (FieldShape shape ty) ->
+  FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
+
 input ::
   forall shape ty app.
   (RenderMessage app FormMessage, Shaped shape) =>
-  WidgetFor app () ->
-  FieldFor app shape ty ->
-  [(Text, Text)] ->
-  Maybe (FieldShape shape ty) ->
-  FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
-input label field attributes initial = do
+  (FieldFor app shape ty -> Input app shape ty)
+input field = \label attributes initial -> do
   let Const sAttrs = shapeAttrs @shape
       view evalue = label <> field.view (sAttrs <> attributes) evalue
   tell field.enctype
@@ -308,21 +324,14 @@ input label field attributes initial = do
 input' ::
   forall shape ty app.
   (RenderMessage app FormMessage, Shaped shape, DefaultField app shape ty) =>
-  WidgetFor app () ->
-  [(Text, Text)] ->
-  Maybe (FieldShape shape ty) ->
-  FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
-input' label = input label defaultField
+  Input app shape ty
+input' = input defaultField
 
 select ::
   forall shape ty app.
   (RenderMessage app FormMessage, Eq ty, Shaped shape) =>
-  WidgetFor app () ->
-  OptionList ty ->
-  [(Text, Text)] ->
-  Maybe (FieldShape shape ty) ->
-  FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
-select label options = input label do
+  (OptionList ty -> Input app shape ty)
+select options = input do
   Field
     { enctype = UrlEncoded
     , view = \attrs evalue -> do
