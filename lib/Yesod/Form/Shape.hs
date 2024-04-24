@@ -263,6 +263,18 @@ instance (RenderMessage app FormMessage) => DefaultField app Omit Textarea where
 instance (RenderMessage app FormMessage) => DefaultField app Need Textarea where
   defaultField = invmap Textarea unTextarea (textField NeedS)
 
+instance (RenderMessage app FormMessage) => DefaultField app Need Bool where
+  defaultField =
+    Field
+      { enctype = UrlEncoded
+      , view = \attrs eval ->
+          [whamlet|<input type="checkbox" *{attrs} value="yes">#{either (const "") show eval}|]
+      , parse = \myEnv _ -> pure case myEnv of
+          [] -> Right (Identity False)
+          ["yes"] -> Right (Identity True)
+          xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+      }
+
 -- |
 -- @
 -- type FormFor app =
