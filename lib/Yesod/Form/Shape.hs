@@ -1,15 +1,17 @@
-module Yesod.Form.Shape
-  ( FieldFor (..)
-  , FieldShape
+module Yesod.FormFor.Shape
+  ( Field (..)
+  , numberField
+  , maybeNumberField
+  , textField
+  , textareaField
+  , boolField
+  , FormFor
+  , Form
+  , input
+  , Shaped
   , Shape (..)
   , ShapeType (..)
-  , shapeInstance
-  , DefaultField (..)
-  , input
-  , input'
   , select
-  , singleField
-  , textField
   , generateFormPost
   , runFormPost
   , generateFormGet
@@ -28,10 +30,9 @@ import Control.Monad.RWS
   , evalRWST
   )
 import Data.Byteable (constEqBytes)
-import Data.Data
 import Data.Function ((&))
 import Data.Functor ((<&>))
-import Data.Functor.Const (Const (Const))
+import Data.Functor.Const (Const (..))
 import Data.Functor.Identity (Identity (..))
 import Data.Functor.Invariant
 import Data.Kind (Type)
@@ -41,7 +42,6 @@ import Data.Maybe
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
-import Data.Traversable (for)
 import Network.HTTP.Types (Method, methodGet, methodPost)
 import Network.Wai (Request (requestMethod))
 import Text.Read (readMaybe)
@@ -58,6 +58,164 @@ import Yesod.Form
   , Textarea (..)
   , newFormIdent
   )
+
+-- |
+-- @
+-- data Field app shape ty = Field
+--   { enctype :: Enctype
+--   , view ::
+--       [(Text, Text)] ->
+--       Either Text ty ->
+--       WidgetFor app ()
+--   , parse ::
+--       [Text] ->
+--       [FileInfo] ->
+--       HandlerFor app (Either (SomeMessage app) ty)
+--   }
+-- @
+data Field app ty = Field
+  { enctype :: Enctype
+  , view :: [(Text, Text)] -> Either Text ty -> WidgetFor app ()
+  , parse :: [Text] -> [FileInfo] -> HandlerFor app (Either (SomeMessage app) ty)
+  }
+
+instance Invariant (Field app) where
+  invmap ::
+    (ty -> tz) -> (tz -> ty) -> Field app ty -> Field app tz
+  invmap source target field =
+    field
+      { view = \attrs evalue -> field.view attrs (invmap target source evalue)
+      , parse = \myEnv myFileEnv -> field.parse myEnv myFileEnv <&> invmap source target
+      }
+
+parseWith ::
+  (RenderMessage app FormMessage) =>
+  ([Char] -> Maybe ty) ->
+  [Text] ->
+  HandlerFor app (Either (SomeMessage app) ty)
+parseWith f =
+  pure . \case
+    [] -> Left (SomeMessage MsgValueRequired)
+    [x] -> case f (Text.unpack x) of
+      Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
+      Just fx -> Right fx
+    xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+
+parseWith_ ::
+  (RenderMessage app FormMessage) =>
+  ([Char] -> Maybe ty) ->
+  [Text] ->
+  HandlerFor app (Either (SomeMessage app) (Maybe ty))
+parseWith_ f =
+  pure . \case
+    [] -> Right Nothing
+    [x] -> case f (Text.unpack x) of
+      Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
+      Just fx -> Right (Just fx)
+    xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+
+numberField ::
+  forall n app.
+  (RenderMessage app FormMessage, Num n, Read n, Show n) =>
+  Field app n
+numberField = do
+  Field
+    { enctype = UrlEncoded
+    , view = \attrs evalue -> do
+        [whamlet|<input type="number" *{attrs} value="#{either (const "") show evalue}">|]
+    , parse = \myEnv _ -> parseWith readMaybe myEnv
+    }
+
+maybeNumberField ::
+  forall n app.
+  (RenderMessage app FormMessage, Num n, Read n, Show n) =>
+  Field app (Maybe n)
+maybeNumberField = do
+  Field
+    { enctype = UrlEncoded
+    , view = \attrs evalue -> do
+        [whamlet|<input type="number" *{attrs} value="#{either (const "") (maybe "" show) evalue}">|]
+    , parse = \myEnv _ -> parseWith_ readMaybe myEnv
+    }
+
+textField :: (RenderMessage app FormMessage) => Field app Text
+textField = do
+  Field
+    { enctype = UrlEncoded
+    , view = \attrs evalue -> do
+        [whamlet|<input type="text" *{attrs}>#{either (const "") id evalue}|]
+    , parse = \myEnv _ -> pure case myEnv of
+        [] -> Right ""
+        [x] -> Right x
+        xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+    }
+
+textareaField :: (RenderMessage app FormMessage) => Field app Textarea
+textareaField =
+  Field
+    { enctype = UrlEncoded
+    , view = \attrs evalue -> do
+        [whamlet|<input type="textarea" *{attrs}>#{either (const $ Textarea "") id evalue}|]
+    , parse = \myEnv _ -> pure case myEnv of
+        [] -> Right (Textarea "")
+        [x] -> Right (Textarea x)
+        xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+    }
+
+boolField :: (RenderMessage app FormMessage) => Field app Bool
+boolField =
+  Field
+    { enctype = UrlEncoded
+    , view = \attrs evalue -> do
+        [whamlet|<input type="checkbox" *{attrs} value="1" :Right True == evalue:checked>|]
+    , parse = \myEnv _ -> pure case myEnv of
+        [] -> Right False
+        ["1"] -> Right True
+        [_] -> Right False
+        xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+    }
+
+-- |
+-- @
+-- type FormFor app =
+--   RWST
+--     (Maybe (Env, FileEnv), app, [Lang])
+--     Enctype
+--     Ints
+--     (HandlerFor app)
+-- @
+type FormFor app =
+  RWST
+    (Maybe (Env, FileEnv), app, [Lang])
+    Enctype
+    Ints
+    (HandlerFor app)
+
+type Form app ty = FormFor app (FormResult ty, WidgetFor app ())
+
+requireName :: Text -> [(Text, Text)] -> [(Text, Text)]
+requireName name attrs = case lookup "name" attrs of
+  Nothing -> ("name", name) : attrs
+  _ -> attrs
+
+input ::
+  (RenderMessage app FormMessage) =>
+  (Field app ty -> [(Text, Text)] -> ty -> Form app ty)
+input field attributes initial = do
+  tell field.enctype
+  (envs, app, langs) <- ask
+  name <- maybe newFormIdent pure (lookup "name" attributes)
+  second (field.view $ requireName name attributes) <$> case envs of
+    Nothing -> pure (FormMissing, Right initial)
+    Just (env, fileEnv) -> do
+      let myEnv = Map.findWithDefault [] name env
+          myFiles = Map.findWithDefault [] name fileEnv
+      lift (field.parse myEnv myFiles) <&> \case
+        Right x -> (FormSuccess x, Right x)
+        Left (SomeMessage msg) ->
+          ( FormFailure [renderMessage app langs msg]
+          , Left (Text.intercalate ", " myEnv)
+          )
 
 data ShapeType
   = Omit
@@ -78,276 +236,52 @@ data Shape shape where
   ManyS :: Shape Many
   FreeS :: Shape Free
 
--- | > class Shaped shape where shape :: Shape shape
-class Shaped shape where shaped :: Shape shape
+-- | > class FieldShape shape where shape :: Shape shape
+class FieldShape shape where shaped :: Shape shape
 
-instance Shaped Omit where shaped = OmitS
-instance Shaped Need where shaped = NeedS
-instance Shaped Many where shaped = ManyS
-instance Shaped Free where shaped = FreeS
-
--- Shape shape shape shape shape shape shape shape shape shape.
+instance FieldShape Omit where shaped = OmitS
+instance FieldShape Need where shaped = NeedS
+instance FieldShape Many where shaped = ManyS
+instance FieldShape Free where shaped = FreeS
 
 -- |
 -- @
--- type family FieldShape shape = ty | ty -> shape where
---   FieldShape Omit = Maybe
---   FieldShape Need = Identity
---   FieldShape Many = NonEmpty
---   FieldShape Free = []
+-- type family Shaped shape = ty | ty -> shape where
+--   Shaped Omit = Maybe
+--   Shaped Need = Identity
+--   Shaped Many = NonEmpty
+--   Shaped Free = []
 -- @
-type FieldShape :: ShapeType -> Type -> Type
-type family FieldShape shape = ty | ty -> shape where
-  FieldShape Omit = Maybe
-  FieldShape Need = Identity
-  FieldShape Many = NonEmpty
-  FieldShape Free = []
+type Shaped :: ShapeType -> Type -> Type
+type family Shaped shape = ty | ty -> shape where
+  Shaped Omit = Maybe
+  Shaped Need = Identity
+  Shaped Many = NonEmpty
+  Shaped Free = []
 
-shapeInstance ::
-  forall c shape.
-  (Shaped shape, c Maybe, c Identity, c NonEmpty, c []) =>
-  (forall r. ((c (FieldShape shape)) => r) -> r)
-shapeInstance x = case shaped @shape of
-  OmitS -> x
-  NeedS -> x
-  ManyS -> x
-  FreeS -> x
-
-shapeAttrs :: forall shape. (Shaped shape) => Const [(Text, Text)] (Shape shape)
+shapeAttrs ::
+  forall shape.
+  (FieldShape shape) =>
+  Const [(Text, Text)] (Shape shape)
 shapeAttrs = case shaped @shape of
   OmitS -> Const []
   NeedS -> Const [("required", "required")]
   ManyS -> Const [("required", "required"), ("multiple", "multiple")]
   FreeS -> Const [("multiple", "multiple")]
 
--- |
--- @
--- data FieldFor app shape ty = Field
---   { enctype :: Enctype
---   , view ::
---       [(Text, Text)] ->
---       Either Text (FieldShape shape ty) ->
---       WidgetFor app ()
---   , parse ::
---       [Text] ->
---       [FileInfo] ->
---       HandlerFor app (Either (SomeMessage app) (FieldShape shape ty))
---   }
--- @
-data FieldFor app shape ty = Field
-  { enctype :: Enctype
-  , view ::
-      [(Text, Text)] ->
-      Either Text (FieldShape shape ty) ->
-      WidgetFor app ()
-  , parse ::
-      [Text] ->
-      [FileInfo] ->
-      HandlerFor app (Either (SomeMessage app) (FieldShape shape ty))
-  }
-
-instance (Shaped shape) => Invariant (FieldFor app shape) where
-  invmap ::
-    (ty -> tz) -> (tz -> ty) -> FieldFor app shape ty -> FieldFor app shape tz
-  invmap source target field =
-    field
-      { view = \attrs evalue -> shapeInstance @Invariant @shape do
-          field.view attrs (invmap target source <$> evalue)
-      , parse = \myEnv myFileEnv -> shapeInstance @Invariant @shape do
-          field.parse myEnv myFileEnv <&> fmap (invmap source target)
-      }
-
-unsupported :: Shape shape -> [Char] -> ty
-unsupported shape ty =
-  error $ "Shape " <> show shape <> " unsupported for " <> ty
-
-parseSingle ::
-  (RenderMessage app FormMessage) =>
-  Shape shape ->
-  [Char] ->
-  ([Char] -> Maybe ty) ->
-  [Text] ->
-  HandlerFor app (Either (SomeMessage app) (FieldShape shape ty))
-parseSingle shape ty f = \case
-  [] -> pure case shape of
-    OmitS -> Right Nothing
-    NeedS -> Left (SomeMessage MsgValueRequired)
-    _ -> unsupported shape ty
-  [x] -> pure case f (Text.unpack x) of
-    Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
-    Just fx -> case shape of
-      OmitS -> Right (Just fx)
-      NeedS -> Right (Identity fx)
-      _ -> unsupported shape ty
-  xs -> pure $ Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
-
--- | Suitable for 'Omit' and 'Need' for types with inverse 'Show' and 'Read'.
-singleField ::
-  forall ty shape app.
-  (RenderMessage app FormMessage, Read ty, Show ty, Typeable ty) =>
-  Shape shape ->
-  FieldFor app shape ty
-singleField shape = do
-  let ty = show (typeOf (undefined :: ty))
-  Field
-    { enctype = UrlEncoded
-    , view = \attrs evalue -> do
-        let value :: [Char] = case evalue of
-              Left _ -> ""
-              Right v -> case shape of
-                OmitS -> maybe "" show v
-                NeedS -> show (runIdentity v)
-                _ -> unsupported shape ty
-        [whamlet|<input type="number" *{attrs} value="#{value}">|]
-    , parse = \myEnv _ -> parseSingle shape ty readMaybe myEnv
-    }
-
-textField ::
-  forall shape app.
-  (RenderMessage app FormMessage) =>
-  Shape shape ->
-  FieldFor app shape Text
-textField shape = do
-  Field
-    { enctype = UrlEncoded
-    , view = \attrs evalue -> do
-        let value :: [Char] = case evalue of
-              Left _ -> ""
-              Right v -> case shape of
-                OmitS -> maybe "" show v
-                NeedS -> show (runIdentity v)
-                _ -> unsupported shape "Text"
-        [whamlet|<input type="number" *{attrs} value="#{value}">|]
-    , parse = \myEnv _ -> case myEnv of
-        [] -> pure case shape of
-          OmitS -> Right Nothing
-          NeedS -> Left (SomeMessage MsgValueRequired)
-          _ -> unsupported shape "Text"
-        [x] -> pure case shape of
-          OmitS -> Right (Just x)
-          NeedS -> Right (Identity x)
-          _ -> unsupported shape "Text"
-        xs -> pure $ Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
-    }
-
-class (RenderMessage app FormMessage) => DefaultField app shape ty where
-  defaultField :: FieldFor app shape ty
-
-instance (RenderMessage app FormMessage) => DefaultField app Omit Int where
-  defaultField = singleField OmitS
-
-instance (RenderMessage app FormMessage) => DefaultField app Need Int where
-  defaultField = singleField NeedS
-
-instance (RenderMessage app FormMessage) => DefaultField app Omit Integer where
-  defaultField = singleField OmitS
-
-instance (RenderMessage app FormMessage) => DefaultField app Need Integer where
-  defaultField = singleField NeedS
-
-instance (RenderMessage app FormMessage) => DefaultField app Omit Double where
-  defaultField = singleField OmitS
-
-instance (RenderMessage app FormMessage) => DefaultField app Need Double where
-  defaultField = singleField NeedS
-
-instance (RenderMessage app FormMessage) => DefaultField app Omit Text where
-  defaultField = textField OmitS
-
-instance (RenderMessage app FormMessage) => DefaultField app Need Text where
-  defaultField = textField NeedS
-
-instance (RenderMessage app FormMessage) => DefaultField app Omit Textarea where
-  defaultField = invmap Textarea unTextarea (textField OmitS)
-
-instance (RenderMessage app FormMessage) => DefaultField app Need Textarea where
-  defaultField = invmap Textarea unTextarea (textField NeedS)
-
-instance (RenderMessage app FormMessage) => DefaultField app Need Bool where
-  defaultField =
-    Field
-      { enctype = UrlEncoded
-      , view = \attrs eval ->
-          [whamlet|<input type="checkbox" *{attrs} value="yes">#{either (const "") show eval}|]
-      , parse = \myEnv _ -> pure case myEnv of
-          [] -> Right (Identity False)
-          ["yes"] -> Right (Identity True)
-          xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
-      }
-
--- |
--- @
--- type FormFor app =
---   RWST
---     (Maybe (Env, FileEnv), app, [Lang])
---     Enctype
---     Ints
---     (HandlerFor app)
--- @
-type FormFor app =
-  RWST
-    (Maybe (Env, FileEnv), app, [Lang])
-    Enctype
-    Ints
-    (HandlerFor app)
-
--- |
--- @
--- type Input app shape ty =
---   -- | label
---   WidgetFor app () ->
---   -- | attributes
---   [(Text, Text)] ->
---   -- | initial
---   Maybe (FieldShape shape ty) ->
---   FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
--- @
-type Input app shape ty =
-  -- | label
-  WidgetFor app () ->
-  -- | attributes
-  [(Text, Text)] ->
-  -- | initial
-  Maybe (FieldShape shape ty) ->
-  FormFor app (FormResult (FieldShape shape ty), WidgetFor app ())
-
-input ::
-  forall shape ty app.
-  (RenderMessage app FormMessage, Shaped shape) =>
-  (FieldFor app shape ty -> Input app shape ty)
-input field = \label attributes initial -> do
-  let Const sAttrs = shapeAttrs @shape
-      view evalue = label <> field.view (sAttrs <> attributes) evalue
-  tell field.enctype
-  (envs, app, langs) <- ask
-  name <- maybe newFormIdent pure (lookup "name" attributes)
-  second view <$> case envs of
-    Nothing -> pure (FormMissing, maybe (Left "") Right initial)
-    Just (env, fileEnv) -> do
-      let myEnv = Map.findWithDefault [] name env
-          files = Map.findWithDefault [] name fileEnv
-      lift (field.parse myEnv files) <&> \case
-        Right x -> (FormSuccess x, Right x)
-        Left (SomeMessage msg) ->
-          ( FormFailure [renderMessage app langs msg]
-          , Left (Text.intercalate ", " myEnv)
-          )
-
-input' ::
-  forall shape ty app.
-  (RenderMessage app FormMessage, Shaped shape, DefaultField app shape ty) =>
-  Input app shape ty
-input' = input defaultField
-
 select ::
   forall shape ty app.
-  (RenderMessage app FormMessage, Eq ty, Shaped shape) =>
-  (OptionList ty -> Input app shape ty)
-select options = input do
+  (RenderMessage app FormMessage, Eq ty, FieldShape shape) =>
+  OptionList ty ->
+  [(Text, Text)] ->
+  Shaped shape ty ->
+  FormFor app (FormResult (Shaped shape ty), WidgetFor app ())
+select ol = input do
   Field
     { enctype = UrlEncoded
     , view = \attrs evalue -> do
-        let selected :: ty -> Bool = case evalue of
+        let Const s = shapeAttrs @shape
+            selected :: ty -> Bool = case evalue of
               Left _ -> const False
               Right val -> case shaped @shape of
                 OmitS -> maybe (const False) (==) val
@@ -355,70 +289,63 @@ select options = input do
                 ManyS -> flip elem (toList val)
                 FreeS -> flip elem val
         [whamlet|
-          <select *{attrs}>
-            $case options
+          <select *{s <> attrs}>
+            $case ol
               $of OptionList{olOptions}
-                $forall option <- olOptions
-                  <option :selected option.optionInternalValue:selected value="#{option.optionExternalValue}">
-                    #{option.optionDisplay}
+                $forall o <- olOptions
+                  <option :selected o.optionInternalValue:selected value="#{o.optionExternalValue}">
+                    #{o.optionDisplay}
               $of OptionListGrouped{olOptionsGrouped}
-                $forall (group, options) <- olOptionsGrouped
+                $forall (group, ol) <- olOptionsGrouped
                   <optgroup label="#{group}">
-                    $forall option <- options
-                      <option :selected option.optionInternalValue:selected value="#{option.optionExternalValue}">
-                        #{option.optionDisplay}
+                    $forall o <- ol
+                      <option :selected o.optionInternalValue:selected value="#{o.optionExternalValue}">
+                        #{o.optionDisplay}
         |]
     , parse = \myEnv _ -> do
-        let olRead = case options of
+        let olReadMaybe = case ol of
               OptionList{..} -> olReadExternal
               OptionListGrouped{..} -> olReadExternalGrouped
+            olRead :: Text -> Either (SomeMessage app) ty
+            olRead x = case olReadMaybe x of
+              Nothing -> Left (SomeMessage (MsgInvalidEntry x))
+              Just y -> Right y
         case shaped @shape of
           OmitS -> pure case myEnv of
             [] -> Right Nothing
-            [x] -> case olRead x of
-              Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
-              Just y -> Right (Just y)
+            [x] -> Just <$> olRead x
             _ -> Left (SomeMessage $ MsgInvalidEntry "Duplicated")
           NeedS -> pure case myEnv of
             [] -> Left (SomeMessage MsgValueRequired)
-            [x] -> case olRead x of
-              Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
-              Just y -> Right (Identity y)
+            [x] -> Identity <$> olRead x
             _ -> Left (SomeMessage $ MsgInvalidEntry "Duplicated")
           ManyS -> pure case nonEmpty myEnv of
             Nothing -> Left (SomeMessage MsgValueRequired)
-            Just xs -> for xs \x -> case olRead x of
-              Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
-              Just y -> Right y
-          FreeS -> pure $ for myEnv \x -> case olRead x of
-            Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
-            Just y -> Right y
+            Just xs -> traverse olRead xs
+          FreeS -> pure $ traverse olRead myEnv
     }
 
 runFormWithEnv ::
-  FormFor app ty ->
+  Form app ty ->
   Maybe (Env, FileEnv) ->
-  HandlerFor app (ty, Enctype)
+  HandlerFor app ((FormResult ty, WidgetFor app ()), Enctype)
 runFormWithEnv form envs = do
   app <- getYesod
   langs <- languages
   evalRWST form (envs, app, langs) (IntSingle 0)
 
--- | > type Csrf form = Html -> form
-type Csrf form = Html -> form
-
 runFormPostWithEnv ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app (FormResult ty, WidgetFor app ())) ->
+  (Html -> Form app ty) ->
   Maybe (Env, FileEnv) ->
   HandlerFor app ((FormResult ty, WidgetFor app ()), Enctype)
-runFormPostWithEnv cform envs = do
+runFormPostWithEnv mk envs = do
   YesodRequest{reqToken} <- getRequest
   app <- getYesod
   langs <- languages
 
   let postKey = defaultCsrfParamName
-      (csrf, valid) = flip (maybe (mempty, isNothing)) reqToken \token ->
+      (withKey, valid) = flip (maybe (mempty, isNothing)) reqToken \token ->
         ( [shamlet|<input type="hidden" name="#{postKey}" value="#{token}">|]
         , \case
             Just [tokenR] ->
@@ -427,7 +354,7 @@ runFormPostWithEnv cform envs = do
             _ -> False
         )
 
-  runFormWithEnv (cform csrf) envs <&> (first . first) case envs of
+  runFormWithEnv (mk withKey) envs <&> (first . first) case envs of
     Just (env, _) -> \case
       FormSuccess{}
         | not $ valid (env Map.!? postKey) ->
@@ -437,9 +364,9 @@ runFormPostWithEnv cform envs = do
 
 generateFormPost ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app (FormResult ty, WidgetFor app ())) ->
+  (Html -> Form app ty) ->
   HandlerFor app (WidgetFor app (), Enctype)
-generateFormPost cform = first snd <$> runFormPostWithEnv cform Nothing
+generateFormPost mk = first snd <$> runFormPostWithEnv mk Nothing
 
 methodEnv :: Method -> HandlerFor app (Maybe (Env, FileEnv))
 methodEnv method = do
@@ -451,38 +378,38 @@ methodEnv method = do
 
 runFormPost ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app (FormResult ty, WidgetFor app ())) ->
+  (Html -> Form app ty) ->
   HandlerFor app ((FormResult ty, WidgetFor app ()), Enctype)
-runFormPost cform = runFormPostWithEnv cform =<< methodEnv methodPost
+runFormPost mk = runFormPostWithEnv mk =<< methodEnv methodPost
 
 getKey :: Text
 getKey = "_hasdata"
 
 runFormGetWithEnv ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app ty) ->
+  (Html -> Form app ty) ->
   Maybe (Env, FileEnv) ->
-  HandlerFor app (ty, Enctype)
-runFormGetWithEnv cform =
-  runFormWithEnv $ cform [shamlet|<input type="hidden" name="#{getKey}">|]
+  HandlerFor app ((FormResult ty, WidgetFor app ()), Enctype)
+runFormGetWithEnv mk =
+  runFormWithEnv $ mk [shamlet|<input type="hidden" name="#{getKey}">|]
 
 generateFormGet ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app (FormResult ty, WidgetFor app ())) ->
+  (Html -> Form app ty) ->
   HandlerFor app (WidgetFor app (), Enctype)
-generateFormGet cform = first snd <$> runFormGetWithEnv cform Nothing
+generateFormGet mk = first snd <$> runFormGetWithEnv mk Nothing
 
 runFormGet ::
   (RenderMessage app FormMessage) =>
-  Csrf (FormFor app (FormResult ty, WidgetFor app ())) ->
+  (Html -> Form app ty) ->
   HandlerFor app ((FormResult ty, WidgetFor app ()), Enctype)
-runFormGet cform = runFormGetWithEnv cform =<< methodEnv methodGet
+runFormGet mk = runFormGetWithEnv mk =<< methodEnv methodGet
 
-identifyForm :: Text -> Csrf (FormFor app ty) -> Csrf (FormFor app ty)
-identifyForm me cform csrf = do
+identifyForm :: Text -> (Html -> Form app ty) -> (Html -> Form app ty)
+identifyForm me mk withKey = do
   let i = "_identifier"
       amHere = elem me . Map.findWithDefault [] i
-  (cform (csrf <> [shamlet|<input type="hidden" name="#{i}" value="#{me}">|]) &)
+  (mk (withKey <> [shamlet|<input type="hidden" name="#{i}" value="#{me}">|]) &)
     =<< asks \case
       (Just (env, _), _, _) | not (amHere env) ->
         local \(_, app, langs) -> (Nothing, app, langs)
