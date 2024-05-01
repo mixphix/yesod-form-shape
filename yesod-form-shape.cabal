@@ -43,6 +43,7 @@ library
     , http-types
     , invariant
     , mtl
+    , prairie
     , text
     , wai
     , yesod-core

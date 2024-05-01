@@ -21,6 +21,7 @@ module Yesod.Form.Shape
   , pattern FormExit
   , runEntry
   , form
+  , tabulateForm
   , generateFormPost
   , runFormPost
   , generateFormGet
@@ -56,6 +57,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Network.HTTP.Types (Method, methodGet, methodPost)
 import Network.Wai (Request (requestMethod))
+import Prairie (Prairie, Record, components, tabulate)
 import Text.Read (readMaybe)
 import Yesod.Core
 import Yesod.Form
@@ -253,6 +255,15 @@ form ::
   FormEntry app ty ->
   Compose (FormFor app) (FormExit app) ty
 form = Compose . runEntry
+
+-- |
+-- @'tabulateForm' record@ is the action in the @'FormFor' app@ monad given by tabulating its fields.
+-- The resulting @Widget@ in the 'FormOutput' is produced by concatenation.
+tabulateForm ::
+  (Record rec, RenderMessage app FormMessage) =>
+  Prairie rec (FormEntry app) ->
+  FormFor app (FormExit app rec)
+tabulateForm = getCompose . tabulate . components form
 
 data ShapeType
   = Omit
