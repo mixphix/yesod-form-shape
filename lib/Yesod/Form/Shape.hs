@@ -10,7 +10,9 @@ module Yesod.Form.Shape
   , ShapeType (..)
   , selectPortal
   , FormFor
+  , type FormInput
   , pattern FormInput
+  , type FormOutput
   , pattern FormOutput
   , runInput
   , form
