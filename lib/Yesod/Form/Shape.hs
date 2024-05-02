@@ -356,15 +356,6 @@ selectPortal ol =
           FreeS -> pure $ traverse olRead myEnv
     }
 
-runFormWithEnv ::
-  FormFor app (FormOutput app ty) ->
-  Maybe (Env, FileEnv) ->
-  HandlerFor app (FormOutput app ty, Enctype)
-runFormWithEnv f envs = do
-  app <- getYesod
-  langs <- languages
-  evalRWST f (envs, app, langs) (IntSingle 0)
-
 runFormPostWithEnv ::
   (RenderMessage app FormMessage) =>
   (Html -> FormFor app (FormOutput app ty)) ->
@@ -375,22 +366,23 @@ runFormPostWithEnv mk envs = do
   app <- getYesod
   langs <- languages
   let postKey = defaultCsrfParamName
-      (withKey, valid) = flip (maybe (mempty, isNothing)) reqToken \token ->
-        ( [shamlet|<input type="hidden" name="#{postKey}" value="#{token}">|]
-        , \case
-            Just [tokenR] ->
-              -- The use of 'constEqBytes' prevents timing attacks.
-              Text.encodeUtf8 tokenR `constEqBytes` Text.encodeUtf8 token
-            _ -> False
-        )
-      validatePostKey = case envs of
-        Just (env, _) -> \(FormOutput result widget) -> (`FormOutput` widget) case result of
-          FormSuccess{}
-            | not $ valid (env Map.!? postKey) ->
-                FormFailure [renderMessage app langs MsgCsrfWarning]
-          _ -> result
-        Nothing -> const $ FormOutput FormMissing mempty
-  first validatePostKey <$> runFormWithEnv (mk withKey) envs
+      (withKey, invalidPostKey) = case reqToken of
+        Nothing -> (mempty, \env -> isJust (env Map.!? postKey))
+        Just token ->
+          ( [shamlet|<input type="hidden" name="#{postKey}" value="#{token}">|]
+          , \env -> case env Map.!? postKey of
+              Just [tokenR] ->
+                -- The use of 'constEqBytes' prevents timing attacks.
+                not $ Text.encodeUtf8 tokenR `constEqBytes` Text.encodeUtf8 token
+              _ -> True
+          )
+      validatePostKey (FormOutput result widget) = case (result, envs) of
+        (FormSuccess{}, Just (env, _))
+          | invalidPostKey env ->
+              FormOutput (FormFailure [renderMessage app langs MsgCsrfWarning]) widget
+        (_, Nothing) -> FormOutput FormMissing widget
+        _ -> FormOutput result widget
+  first validatePostKey <$> evalRWST (mk withKey) (envs, app, langs) (IntSingle 0)
 
 generateFormPost ::
   (RenderMessage app FormMessage) =>
@@ -420,8 +412,13 @@ runFormGetWithEnv ::
   (Html -> FormFor app (FormOutput app ty)) ->
   Maybe (Env, FileEnv) ->
   HandlerFor app (FormOutput app ty, Enctype)
-runFormGetWithEnv mk =
-  runFormWithEnv $ mk [shamlet|<input type="hidden" name="#{getKey}">|]
+runFormGetWithEnv mk envs = do
+  app <- getYesod
+  langs <- languages
+  evalRWST
+    (mk [shamlet|<input type="hidden" name="#{getKey}">|])
+    (envs, app, langs)
+    (IntSingle 0)
 
 generateFormGet ::
   (RenderMessage app FormMessage) =>
@@ -439,8 +436,7 @@ identifyForm :: Text -> (Html -> FormFor app ty) -> (Html -> FormFor app ty)
 identifyForm me mk withKey = do
   let i = "_identifier" :: Text
       amHere = elem me . Map.findWithDefault [] i
-  (mk (withKey <> [shamlet|<input type="hidden" name="#{i}" value="#{me}">|]) &)
-    =<< asks \case
-      (Just (env, _), _, _) | not (amHere env) ->
-        local \(_, app, langs) -> (Nothing, app, langs)
-      _ -> id
+      withKey' = withKey <> [shamlet|<input type="hidden" name="#{i}" value="#{me}">|]
+  (mk withKey' &) =<< asks \case
+    (Just (env, _), _, _) | not (amHere env) -> local \(_, app, langs) -> (Nothing, app, langs)
+    _ -> id
