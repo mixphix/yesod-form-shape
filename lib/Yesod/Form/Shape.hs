@@ -8,10 +8,10 @@ module Yesod.Form.Shape
   , textEntry
   , textareaEntry
   , boolEntry
-  , Shape
   , ShapeS (OmitS, NeedS, ManyS, FreeS)
-  , ShapeType (Omit, Need, Many, Free)
-  , Shaped (shaped)
+  , Shape (Omit, Need, Many, Free)
+  , KnownShape (shapeS)
+  , Select
   , selectEntry
   , FormFor
   , Decorate (Decorate, decorate)
@@ -254,47 +254,42 @@ form ::
   Compose (FormFor app) (FormExit app) ty
 form = Compose . runEntry
 
-data ShapeType
+data Shape
   = Omit
   | Need
   | Many
   | Free
 
-type ShapeS :: ShapeType -> Type
+type ShapeS :: Shape -> Type
 data ShapeS shape where
   OmitS :: ShapeS Omit
   NeedS :: ShapeS Need
   ManyS :: ShapeS Many
   FreeS :: ShapeS Free
 
--- | > class Shaped shape where shape :: ShapeS shape
-class Shaped shape where shaped :: ShapeS shape
-
-instance Shaped Omit where shaped = OmitS
-instance Shaped Need where shaped = NeedS
-instance Shaped Many where shaped = ManyS
-instance Shaped Free where shaped = FreeS
+class KnownShape shape where shapeS :: ShapeS shape
+instance KnownShape Omit where shapeS = OmitS
+instance KnownShape Need where shapeS = NeedS
+instance KnownShape Many where shapeS = ManyS
+instance KnownShape Free where shapeS = FreeS
 
 -- |
 -- @
--- type family Shape shape = ty | ty -> shape where
---   Shape Omit = Maybe
---   Shape Need = Identity
---   Shape Many = NonEmpty
---   Shape Free = []
+-- type family Select shape = ty | ty -> shape where
+--   Select Omit = Maybe
+--   Select Need = Identity
+--   Select Many = NonEmpty
+--   Select Free = []
 -- @
-type Shape :: ShapeType -> Type -> Type
-type family Shape shape = ty | ty -> shape where
-  Shape Omit = Maybe
-  Shape Need = Identity
-  Shape Many = NonEmpty
-  Shape Free = []
+type Select :: Shape -> Type -> Type
+type family Select shape = ty | ty -> shape where
+  Select Omit = Maybe
+  Select Need = Identity
+  Select Many = NonEmpty
+  Select Free = []
 
-shapeAttrs ::
-  forall shape.
-  (Shaped shape) =>
-  Const [(Text, Text)] (ShapeS shape)
-shapeAttrs = case shaped @shape of
+shapeAttrs :: forall shape. (KnownShape shape) => Const Attrs shape
+shapeAttrs = case shapeS @shape of
   OmitS -> Const []
   NeedS -> Const [("required", "required")]
   ManyS -> Const [("required", "required"), ("multiple", "multiple")]
@@ -305,9 +300,9 @@ shapeAttrs = case shaped @shape of
 -- and a @shape@ parameter to handle the selection quantity.
 selectEntry ::
   forall shape ty app.
-  (RenderMessage app FormMessage, Eq ty, Shaped shape) =>
+  (RenderMessage app FormMessage, Eq ty, KnownShape shape) =>
   OptionList ty ->
-  Entry app (Shape shape ty)
+  Entry app (Select shape ty)
 selectEntry ol =
   Entry
     { enctype = UrlEncoded
@@ -315,7 +310,7 @@ selectEntry ol =
         let Const s = shapeAttrs @shape
             selected :: ty -> Bool = case value of
               Left _ -> const False
-              Right val -> case shaped @shape of
+              Right val -> case shapeS @shape of
                 OmitS -> maybe (const False) (==) val
                 NeedS -> (== runIdentity val)
                 ManyS -> flip elem (toList val)
@@ -342,7 +337,7 @@ selectEntry ol =
             olRead x = case olReadMaybe x of
               Nothing -> Left (SomeMessage (MsgInvalidEntry x))
               Just y -> Right y
-        case shaped @shape of
+        case shapeS @shape of
           OmitS -> pure case myEnv of
             [] -> Right Nothing
             [x] -> Just <$> olRead x
