@@ -26,6 +26,11 @@ module Yesod.Form.Shape
   , generateFormGet
   , runFormGet
   , identifyForm
+  , Design (..)
+  , LabelPos (..)
+  , Label (..)
+  , designDecorate
+  , checkbox
   )
 where
 
@@ -202,12 +207,12 @@ type FormEntry app =
 -- @'FormEntry' entry attrs value decor@ specifies how to interpret a value of @ty@ through a 'Entry'.
 pattern FormEntry ::
   Entry app ty ->
-  [(Text, Text)] ->
+  Attrs ->
   ty ->
-  (WidgetFor app () -> WidgetFor app ()) ->
+  Decorate app ->
   FormEntry app ty
 pattern FormEntry entry attrs value decor =
-  Pair entry (Pair (Const (attrs, Decorate decor)) (Identity value))
+  Pair entry (Pair (Const (attrs, decor)) (Identity value))
 
 {-# COMPLETE FormEntry #-}
 
@@ -215,7 +220,7 @@ type FormExit app = Product FormResult (Const (WidgetFor app ()))
 
 -- |
 -- A @'FormExit' result widget@ is what you get back from a @'FormEntry' entry attrs value decor@,
--- after you've done some stuff in the @'FormFor' app@ monad.
+-- after you've done some stuff in the @'FormFor' app@ mona
 pattern FormExit :: FormResult ty -> WidgetFor app () -> FormExit app ty
 pattern FormExit result widget = Pair result (Const widget)
 
@@ -225,7 +230,7 @@ runEntry ::
   (RenderMessage app FormMessage) =>
   FormEntry app ty ->
   FormFor app (FormExit app ty)
-runEntry (FormEntry entry attrs0 value decorate) = do
+runEntry (FormEntry entry attrs0 value Decorate{decorate}) = do
   tell entry.enctype
   (envs, app, langs) <- ask
   (name, attrs) <- case lookup "name" attrs0 of
@@ -436,3 +441,46 @@ identifyForm me mk withKey = do
   (mk withKey' &) =<< asks \case
     (Just (env, _), _, _) | not (amHere env) -> local \(_, app, langs) -> (Nothing, app, langs)
     _ -> id
+
+data LabelPos = LabelBefore | LabelAfter
+data Label = Label {labelPos :: Maybe (Text, LabelPos), attrs :: Attrs}
+data Design app = Design
+  { label :: Label
+  , before :: WidgetFor app ()
+  , self :: Decorate app
+  , after :: WidgetFor app ()
+  , parent :: Decorate app
+  }
+
+designDecorate :: Design app -> Decorate app
+designDecorate Design{..} = Decorate \(self.decorate -> w) -> parent.decorate do
+  before
+  case label.labelPos of
+    Just (t, LabelBefore) -> [whamlet|<label *{label.attrs}>#{t}|] <> w
+    Just (t, LabelAfter) -> w <> [whamlet|<label *{label.attrs}>#{t}|]
+    Nothing -> w
+  after
+
+-- requireAttr :: Text -> Text -> Attrs -> (Text, Attrs)
+-- requireAttr attr value attrs = case lookup attr attrs of
+--   Nothing -> (value, (attr, value) : attrs)
+--   Just __ -> (__, attrs)
+
+designEntry :: Entry app ty -> Attrs -> ty -> Design app -> FormEntry app ty
+designEntry entry attrs value design = FormEntry entry attrs value (designDecorate design)
+
+checkbox ::
+  (RenderMessage app FormMessage) => Text -> Bool -> FormEntry app Bool
+checkbox l value =
+  designEntry
+    boolEntry
+    [("class", "form-check-input")]
+    value
+    Design
+      { label =
+          Label (Just (l, LabelAfter)) [("class", "form-check-label")]
+      , before = mempty
+      , self = Decorate \w -> [whamlet|<div .form-check>^{w}|]
+      , after = mempty
+      , parent = Decorate \w -> [whamlet|<div .form-group>^{w}|]
+      }
