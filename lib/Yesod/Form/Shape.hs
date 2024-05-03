@@ -1,5 +1,8 @@
+{-# LANGUAGE DerivingVia #-}
+
 module Yesod.Form.Shape
   ( Entry (Entry, enctype, view, parse)
+  , type Attrs
   , numberEntry
   , maybeNumberEntry
   , textEntry
@@ -11,6 +14,7 @@ module Yesod.Form.Shape
   , Shaped (shaped)
   , selectEntry
   , FormFor
+  , Decorate (Decorate, decorate)
   , type FormEntry
   , pattern FormEntry
   , type FormExit
@@ -37,7 +41,7 @@ import Control.Monad.RWS
 import Data.Byteable (constEqBytes)
 import Data.Function ((&))
 import Data.Functor ((<&>))
-import Data.Functor.Compose
+import Data.Functor.Compose (Compose (..))
 import Data.Functor.Const (Const (..))
 import Data.Functor.Identity (Identity (..))
 import Data.Functor.Invariant
@@ -46,6 +50,7 @@ import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..), nonEmpty, toList)
 import Data.Map qualified as Map
 import Data.Maybe
+import Data.Semigroup (Endo (..))
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
@@ -66,27 +71,29 @@ import Yesod.Form
   , newFormIdent
   )
 
+type Attrs = [(Text, Text)]
+
 -- |
 -- A 'Entry' is what this library calls the abstraction
 -- for handling data exchanges through Web forms.
 data Entry app ty = Entry
   { enctype :: Enctype
   -- ^ 'UrlEncoded' or 'Multipart'
-  , view :: [(Text, Text)] -> Either Text ty -> WidgetFor app ()
+  , view :: Attrs -> Either Text ty -> WidgetFor app ()
   -- ^
-  -- @'view' attrs initial@ should return a single DOM element
-  -- representing the form widget with attributes @attrs@ and initial value @initial@.
+  -- @'view' attrs value@ should return a single DOM element
+  -- representing the form widget with attributes @attrs@ and initial value @value@.
   , parse :: [Text] -> [FileInfo] -> HandlerFor app (Either (SomeMessage app) ty)
   -- ^ @'parse' myEnv myFileEnv@ is only ever applied to the values from the DOM element's @name@ attribute.
   }
 
 instance Invariant (Entry app) where
   invmap :: (ty -> tz) -> (tz -> ty) -> Entry app ty -> Entry app tz
-  invmap source target p =
+  invmap source target entry =
     Entry
-      { enctype = p.enctype
-      , view = \attrs initial -> p.view attrs (invmap target source initial)
-      , parse = \myEnv myFileEnv -> invmap source target <$> p.parse myEnv myFileEnv
+      { enctype = entry.enctype
+      , view = \attrs value -> entry.view attrs (invmap target source value)
+      , parse = \myEnv myFileEnv -> invmap source target <$> entry.parse myEnv myFileEnv
       }
 
 parseWith ::
@@ -120,8 +127,8 @@ numberEntry ::
 numberEntry = do
   Entry
     { enctype = UrlEncoded
-    , view = \((:) ("required", "required") -> attrs) initial -> do
-        [whamlet|<input type="number" *{attrs} value="#{either (const "") show initial}">|]
+    , view = \((:) ("required", "required") -> attrs) value -> do
+        [whamlet|<input type="number" *{attrs} value="#{either (const "") show value}">|]
     , parse = \myEnv _ -> pure (parseWith readMaybe myEnv)
     }
 
@@ -132,8 +139,8 @@ maybeNumberEntry ::
 maybeNumberEntry = do
   Entry
     { enctype = UrlEncoded
-    , view = \attrs initial -> do
-        [whamlet|<input type="number" *{attrs} value="#{either (const "") (maybe "" show) initial}">|]
+    , view = \attrs value -> do
+        [whamlet|<input type="number" *{attrs} value="#{either (const "") (maybe "" show) value}">|]
     , parse = \myEnv _ -> pure (parseWith_ readMaybe myEnv)
     }
 
@@ -141,8 +148,8 @@ textEntry :: (RenderMessage app FormMessage) => Entry app Text
 textEntry = do
   Entry
     { enctype = UrlEncoded
-    , view = \attrs initial -> do
-        [whamlet|<input type="text" *{attrs}>#{either (const "") id initial}|]
+    , view = \attrs value -> do
+        [whamlet|<input type="text" *{attrs}>#{either (const "") id value}|]
     , parse = \myEnv _ -> pure case myEnv of
         [] -> Right ""
         [x] -> Right x
@@ -153,8 +160,8 @@ textareaEntry :: (RenderMessage app FormMessage) => Entry app Textarea
 textareaEntry =
   Entry
     { enctype = UrlEncoded
-    , view = \attrs initial -> do
-        [whamlet|<input type="textarea" *{attrs}>#{either (const $ Textarea "") id initial}|]
+    , view = \attrs value -> do
+        [whamlet|<input type="textarea" *{attrs}>#{either (const $ Textarea "") id value}|]
     , parse = \myEnv _ -> pure case myEnv of
         [] -> Right (Textarea "")
         [x] -> Right (Textarea x)
@@ -165,8 +172,8 @@ boolEntry :: (RenderMessage app FormMessage) => Entry app Bool
 boolEntry =
   Entry
     { enctype = UrlEncoded
-    , view = \attrs initial -> do
-        [whamlet|<input type="checkbox" *{attrs} value="1" :initial == Right True:checked>|]
+    , view = \attrs value -> do
+        [whamlet|<input type="checkbox" *{attrs} value="1" :value == Right True:checked>|]
     , parse = \myEnv _ -> pure case myEnv of
         [] -> Right False
         ["1"] -> Right True
@@ -181,42 +188,29 @@ type FormFor app =
     Ints
     (HandlerFor app)
 
+newtype Decorate app = Decorate {decorate :: WidgetFor app () -> WidgetFor app ()}
+  deriving (Semigroup, Monoid) via Endo (WidgetFor app ())
+
 type FormEntry app =
-  Compose
-    (Product Identity (Const (WidgetFor app () -> WidgetFor app ())))
-    ( Compose
-        (Product Identity (Const [(Text, Text)]))
-        (Product Identity (Entry app))
-    )
+  Product (Entry app) (Product (Const (Attrs, Decorate app)) Identity)
 
 -- |
--- @'FormEntry' portal attrs initial wrap@ specifies how to interpret a value of @ty@ through a 'Entry'.
+-- @'FormEntry' entry attrs value decor@ specifies how to interpret a value of @ty@ through a 'Entry'.
 pattern FormEntry ::
   Entry app ty ->
   [(Text, Text)] ->
   ty ->
   (WidgetFor app () -> WidgetFor app ()) ->
   FormEntry app ty
-pattern FormEntry portal attrs initial wrap =
-  Compose
-    ( Pair
-        ( Identity
-            ( Compose
-                ( Pair
-                    (Identity (Pair (Identity initial) portal))
-                    (Const attrs)
-                  )
-              )
-          )
-        (Const wrap)
-      )
+pattern FormEntry entry attrs value decor =
+  Pair entry (Pair (Const (attrs, Decorate decor)) (Identity value))
 
 {-# COMPLETE FormEntry #-}
 
 type FormExit app = Product FormResult (Const (WidgetFor app ()))
 
 -- |
--- A @'FormExit' result widget@ is what you get back from a @'FormEntry' portal attrs initial wrap@,
+-- A @'FormExit' result widget@ is what you get back from a @'FormEntry' entry attrs value decor@,
 -- after you've done some stuff in the @'FormFor' app@ monad.
 pattern FormExit :: FormResult ty -> WidgetFor app () -> FormExit app ty
 pattern FormExit result widget = Pair result (Const widget)
@@ -227,8 +221,8 @@ runEntry ::
   (RenderMessage app FormMessage) =>
   FormEntry app ty ->
   FormFor app (FormExit app ty)
-runEntry (FormEntry p attrs0 initial wrap) = do
-  tell p.enctype
+runEntry (FormEntry entry attrs0 value decorate) = do
+  tell entry.enctype
   (envs, app, langs) <- ask
   (name, attrs) <- case lookup "name" attrs0 of
     Just name -> pure (name, attrs0)
@@ -236,18 +230,18 @@ runEntry (FormEntry p attrs0 initial wrap) = do
       name <- newFormIdent
       pure (name, ("name", name) : attrs0)
   (result, widget) <-
-    fmap (p.view attrs) <$> case envs of
-      Nothing -> pure (FormMissing, Right initial)
+    fmap (entry.view attrs) <$> case envs of
+      Nothing -> pure (FormMissing, Right value)
       Just (env, fileEnv) -> do
         let myEnv = Map.findWithDefault [] name env
             myFileEnv = Map.findWithDefault [] name fileEnv
-        lift (p.parse myEnv myFileEnv) <&> \case
+        lift (entry.parse myEnv myFileEnv) <&> \case
           Right x -> (FormSuccess x, Right x)
           Left (SomeMessage msg) ->
             ( FormFailure [renderMessage app langs msg]
             , Left $ Text.intercalate ", " myEnv
             )
-  pure $ FormExit result (wrap widget)
+  pure $ FormExit result (decorate widget)
 
 -- | The transformation representing the exchange from 'FormEntry' to 'FormExit'.
 form ::
@@ -313,9 +307,9 @@ selectEntry ::
 selectEntry ol =
   Entry
     { enctype = UrlEncoded
-    , view = \attrs initial -> do
+    , view = \attrs value -> do
         let Const s = shapeAttrs @shape
-            selected :: ty -> Bool = case initial of
+            selected :: ty -> Bool = case value of
               Left _ -> const False
               Right val -> case shaped @shape of
                 OmitS -> maybe (const False) (==) val
