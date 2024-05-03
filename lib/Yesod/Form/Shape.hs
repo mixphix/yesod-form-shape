@@ -73,6 +73,10 @@ import Yesod.Form
 
 type Attrs = [(Text, Text)]
 
+msgInvalidEntries ::
+  (RenderMessage app FormMessage) => [Text] -> SomeMessage app
+msgInvalidEntries = SomeMessage . MsgInvalidEntry . Text.intercalate ", "
+
 -- |
 -- A 'Entry' is what this library calls the abstraction
 -- for handling data exchanges through Web forms.
@@ -106,7 +110,7 @@ parseWith f = \case
   [x] -> case f (Text.unpack x) of
     Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
     Just fx -> Right fx
-  xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+  xs -> Left (msgInvalidEntries xs)
 
 parseWith_ ::
   (RenderMessage app FormMessage) =>
@@ -118,7 +122,7 @@ parseWith_ f = \case
   [x] -> case f (Text.unpack x) of
     Nothing -> Left (SomeMessage $ MsgInvalidEntry x)
     Just fx -> Right (Just fx)
-  xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+  xs -> Left (msgInvalidEntries xs)
 
 numberEntry ::
   forall n app.
@@ -153,7 +157,7 @@ textEntry = do
     , parse = \myEnv _ -> pure case myEnv of
         [] -> Right ""
         [x] -> Right x
-        xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+        xs -> Left (msgInvalidEntries xs)
     }
 
 textareaEntry :: (RenderMessage app FormMessage) => Entry app Textarea
@@ -165,7 +169,7 @@ textareaEntry =
     , parse = \myEnv _ -> pure case myEnv of
         [] -> Right (Textarea "")
         [x] -> Right (Textarea x)
-        xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+        xs -> Left (msgInvalidEntries xs)
     }
 
 boolEntry :: (RenderMessage app FormMessage) => Entry app Bool
@@ -178,7 +182,7 @@ boolEntry =
         [] -> Right False
         ["1"] -> Right True
         [_] -> Right False
-        xs -> Left (SomeMessage $ MsgInvalidEntry (Text.unlines xs))
+        xs -> Left (msgInvalidEntries xs)
     }
 
 type FormFor app =
@@ -239,7 +243,7 @@ runEntry (FormEntry entry attrs0 value decorate) = do
           Right x -> (FormSuccess x, Right x)
           Left (SomeMessage msg) ->
             ( FormFailure [renderMessage app langs msg]
-            , Left $ Text.intercalate ", " myEnv
+            , Left (Text.intercalate ", " myEnv)
             )
   pure $ FormExit result (decorate widget)
 
