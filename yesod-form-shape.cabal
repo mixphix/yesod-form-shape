@@ -22,6 +22,8 @@ library
     DataKinds
     DefaultSignatures
     DerivingStrategies
+    DerivingVia
+    DuplicateRecordFields
     LambdaCase
     MultiWayIf
     OverloadedRecordDot
@@ -40,10 +42,14 @@ library
     , base
     , byteable
     , containers
+    , data-default
     , http-types
     , invariant
     , mtl
+    , prairie
+    , shakespeare
     , text
+    , time
     , wai
     , yesod-core
     , yesod-form
