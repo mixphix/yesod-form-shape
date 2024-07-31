@@ -25,7 +25,7 @@ module Yesod.Form.Shape
   , pattern FormOutput
   , Entry (..)
   , entry
-  , runEntry
+  , runInput
   , form
   , actionForm
   , recordForm
@@ -89,13 +89,13 @@ import Data.Semigroup (Endo (..))
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
+import Data.Text.Read qualified as Text
 import Data.Time
 import GHC.Natural (Natural)
 import GHC.TypeError (ErrorMessage (Text), TypeError)
 import Network.HTTP.Types (Method, methodGet, methodPost)
 import Network.Wai (Request (requestMethod))
 import Prairie (Cases (Cases), Record (..), type (~>))
-import Text.Read qualified as Text
 import Text.Shakespeare.Text (st)
 import Yesod.Core
 import Yesod.Form
@@ -192,11 +192,11 @@ pattern FormOutput result widget = Pair result (Const widget)
 
 {-# COMPLETE FormOutput #-}
 
-runEntry ::
+runInput ::
   (RenderMessage app FormMessage) =>
   FormInput app ty ->
   FormFor app (FormResult ty, WidgetFor app ())
-runEntry (FormInput d input attrs0 value) = do
+runInput (FormInput d input attrs0 value) = do
   tell input.enctype
   (envs, app, langs) <- ask
   (name, attrs) <- case lookup "name" attrs0 of
@@ -222,12 +222,12 @@ runEntry (FormInput d input attrs0 value) = do
 form ::
   (RenderMessage app FormMessage) =>
   FormInput app ~> Compose (FormFor app) (FormOutput app)
-form = Compose . fmap (uncurry FormOutput) . runEntry
+form = Compose . fmap (uncurry FormOutput) . runInput
 
 actionForm ::
   (RenderMessage app FormMessage) =>
   Compose (FormFor app) (FormInput app) ~> Compose (FormFor app) (FormOutput app)
-actionForm (Compose entryAction) = Compose (fmap (uncurry FormOutput) . runEntry =<< entryAction)
+actionForm (Compose entryAction) = Compose (fmap (uncurry FormOutput) . runInput =<< entryAction)
 
 recordForm ::
   (Record rec, RenderMessage app FormMessage) =>
@@ -608,6 +608,28 @@ parse1With f = \case
     Just fx -> Right fx
   env -> Left (msgInvalidEntries env)
 
+parse0WithNum ::
+  (RenderMessage app FormMessage, Number n) =>
+  (Text -> Maybe n) ->
+  [Text] ->
+  Either (SomeMessage app) (Maybe n)
+parse0WithNum f = \case
+  [] -> Right Nothing
+  [""] -> Right Nothing
+  env -> Just <$> parse1WithNum f env
+
+parse1WithNum ::
+  (RenderMessage app FormMessage, Number n) =>
+  (Text -> Maybe n) ->
+  [Text] ->
+  Either (SomeMessage app) n
+parse1WithNum f = \case
+  [] -> Left (SomeMessage MsgValueRequired)
+  [x] -> case f x of
+    Nothing -> Left (SomeMessage $ MsgInvalidNumber x)
+    Just fx -> Right fx
+  env -> Left (msgInvalidEntries env)
+
 requireAttr :: (Applicative m) => Text -> m Text -> Attrs -> m (Text, Attrs)
 requireAttr attr value attrs = case lookup attr attrs of
   Nothing -> value <&> \new -> (new, (attr, new) : attrs)
@@ -788,11 +810,11 @@ instance (RenderMessage app FormMessage) => Entry app [FileInfo] where
 --   type EntryAuxiliary app _ = ()
 --   entry' () l attrs value = Compose $ dateEntry l attrs value
 
-timeEntry ::
+timeInput ::
   forall shape app.
   (KnownShape shape, SingleShape shape, RenderMessage app FormMessage) =>
   Input app (Select shape TimeOfDay)
-timeEntry =
+timeInput =
   Input
     { enctype = UrlEncoded
     , view = \a v -> do
@@ -811,14 +833,14 @@ instance (RenderMessage app FormMessage) => Entry app TimeOfDay where
   entry' () l attrs value = Compose $ pure do
     designInput
       (asteriskLabel LabelBefore l)
-      (invmap runIdentity Identity timeEntry)
+      (invmap runIdentity Identity timeInput)
       attrs
       value
 
 instance (RenderMessage app FormMessage) => Entry app (Maybe TimeOfDay) where
   type EntryAuxiliary app _ = ()
   entry' () l attrs value = Compose $ pure do
-    designInput (simpleLabel LabelBefore l) timeEntry attrs value
+    designInput (simpleLabel LabelBefore l) timeInput attrs value
 
 -- instance
 --   (RenderMessage app FormMessage) =>
@@ -855,19 +877,20 @@ instance (RenderMessage app FormMessage) => Entry app (Maybe TimeOfDay) where
 
 type Number n = (Eq n, Num n, Read n, Show n)
 
-numEntry ::
+integralInput ::
   forall shape n app.
   ( KnownShape shape
   , SingleShape shape
   , RenderMessage app FormMessage
   , Number n
+  , Integral n
   ) =>
   Maybe (WidgetFor app ()) ->
   Maybe Text ->
   Attrs ->
   Select shape n ->
-  FormFor app (FormInput app (Select shape n))
-numEntry pre l attrs value = pure do
+  FormInput app (Select shape n)
+integralInput pre l attrs value =
   designInput
     case pre of
       Nothing -> simpleLabel LabelBefore l
@@ -885,49 +908,90 @@ numEntry pre l attrs value = pure do
                 NeedS -> show . runIdentity
           [whamlet|<input type="number" *{s <> a} value="#{val}">|]
       , parse = \myEnv _ -> pure case shapeS @shape of
-          OmitS -> parse0With Text.readMaybe myEnv
-          NeedS -> parse1With Text.readMaybe myEnv
+          OmitS ->
+            parse0WithNum
+              (either (const Nothing) (Just . fst) . Text.signed Text.decimal)
+              myEnv
+          NeedS ->
+            parse1WithNum
+              (either (const Nothing) (Just . fst) . Text.signed Text.decimal)
+              myEnv
       }
     attrs
     value
 
-singleNumEntry ::
-  (RenderMessage app FormMessage, Number n) =>
-  ( Maybe (WidgetFor app ()) ->
-    Maybe Text ->
-    Attrs ->
-    n ->
-    FormFor app (FormInput app n)
-  )
-singleNumEntry pre l attrs = fmap (invmap runIdentity Identity) . numEntry pre l attrs . Identity
+doubleInput ::
+  forall shape app.
+  ( KnownShape shape
+  , SingleShape shape
+  , RenderMessage app FormMessage
+  ) =>
+  Maybe (WidgetFor app ()) ->
+  Maybe Text ->
+  Attrs ->
+  Select shape Double ->
+  FormInput app (Select shape Double)
+doubleInput pre l attrs value =
+  designInput
+    case pre of
+      Nothing -> simpleLabel LabelBefore l
+      Just before ->
+        (simpleLabel LabelBefore l)
+          { before
+          , self = Decorate \w -> [whamlet|<div .input-group>^{w}|]
+          }
+    Input
+      { enctype = UrlEncoded
+      , view = \a v -> do
+          let Const s = shapeAttrs @shape
+              val :: String = flip (either (const "")) v case shapeS @shape of
+                OmitS -> maybe "" show
+                NeedS -> show . runIdentity
+          [whamlet|<input type="number" *{s <> a} value="#{val}">|]
+      , parse = \myEnv _ -> pure case shapeS @shape of
+          OmitS ->
+            parse0WithNum
+              (either (const Nothing) (Just . fst) . Text.signed Text.double)
+              myEnv
+          NeedS ->
+            parse1WithNum
+              (either (const Nothing) (Just . Identity . fst) . Text.signed Text.double)
+              myEnv
+      }
+    attrs
+    value
 
 instance (RenderMessage app FormMessage) => Entry app (Maybe Int) where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs val = Compose $ numEntry Nothing l attrs val
+  entry' () l attrs val = Compose $ pure (integralInput Nothing l attrs val)
 instance (RenderMessage app FormMessage) => Entry app Int where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs val = Compose $ singleNumEntry Nothing l attrs val
+  entry' () l attrs val = Compose $ pure do
+    invmap runIdentity Identity $ integralInput Nothing l attrs (Identity val)
 
 instance (RenderMessage app FormMessage) => Entry app (Maybe Integer) where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs val = Compose $ numEntry Nothing l attrs val
+  entry' () l attrs val = Compose $ pure (integralInput Nothing l attrs val)
 instance (RenderMessage app FormMessage) => Entry app Integer where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs val = Compose $ singleNumEntry Nothing l attrs val
+  entry' () l attrs val = Compose $ pure do
+    invmap runIdentity Identity $ integralInput Nothing l attrs (Identity val)
 
 instance (RenderMessage app FormMessage) => Entry app (Maybe Natural) where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs val = Compose $ numEntry Nothing l attrs val
+  entry' () l attrs val = Compose $ pure (integralInput Nothing l attrs val)
 instance (RenderMessage app FormMessage) => Entry app Natural where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs val = Compose $ singleNumEntry Nothing l attrs val
+  entry' () l attrs val = Compose $ pure do
+    invmap runIdentity Identity $ integralInput Nothing l attrs (Identity val)
 
 instance (RenderMessage app FormMessage) => Entry app (Maybe Double) where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs val = Compose $ numEntry Nothing l attrs val
+  entry' () l attrs val = Compose $ pure (doubleInput Nothing l attrs val)
 instance (RenderMessage app FormMessage) => Entry app Double where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs val = Compose $ singleNumEntry Nothing l attrs val
+  entry' () l attrs val = Compose $ pure do
+    invmap runIdentity Identity $ doubleInput Nothing l attrs (Identity val)
 
 instance (RenderMessage app FormMessage) => Entry app Text where
   type EntryAuxiliary app _ = ()
