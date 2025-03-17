@@ -2,5 +2,3 @@ packages:
   .
   ../control-block
   ../prairie
-constraintS:
-  wai-extra < 3.1.17

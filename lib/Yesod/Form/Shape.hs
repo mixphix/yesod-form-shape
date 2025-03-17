@@ -167,7 +167,7 @@ newtype Decorate app = Decorate {decorate :: WidgetFor app () -> WidgetFor app (
   deriving (Semigroup, Monoid) via Endo (WidgetFor app ())
 
 type FormInput app =
-  Product (Input app) (Product (Const (Attrs, Decorate app)) Identity)
+  Product (Input app) (Product (Const (Attrs, Decorate app)) Maybe)
 
 -- |
 -- @'FormInput' entry attrs value decor@ specifies how to interpret a value of @ty@ through a 'Input'.
@@ -175,10 +175,10 @@ pattern FormInput ::
   Decorate app ->
   Input app ty ->
   Attrs ->
-  ty ->
+  Maybe ty ->
   FormInput app ty
 pattern FormInput decor entry attrs value =
-  Pair entry (Pair (Const (attrs, decor)) (Identity value))
+  Pair entry (Pair (Const (attrs, decor)) value)
 
 {-# COMPLETE FormInput #-}
 
@@ -193,6 +193,7 @@ pattern FormOutput result widget = Pair result (Const widget)
 {-# COMPLETE FormOutput #-}
 
 runInput ::
+  forall app ty.
   (RenderMessage app FormMessage) =>
   FormInput app ty ->
   FormFor app (FormResult ty, WidgetFor app ())
@@ -206,7 +207,7 @@ runInput (FormInput d input attrs0 value) = do
       pure (name, ("name", name) : attrs0)
   (result, widget) <-
     fmap (input.view attrs) <$> case envs of
-      Nothing -> pure (FormMissing, Right value)
+      Nothing -> pure (FormMissing, maybe (Left "No initial value") Right value)
       Just (env, fileEnv) -> do
         let myEnv = Map.findWithDefault [] name env
             myFileEnv = Map.findWithDefault [] name fileEnv
@@ -216,7 +217,7 @@ runInput (FormInput d input attrs0 value) = do
             ( FormFailure [renderMessage app langs msg]
             , Left (Text.intercalate ", " myEnv)
             )
-  pure (result, d.decorate widget)
+  pure (result :: FormResult ty, d.decorate widget)
 
 -- | The transformation representing the exchange from 'FormInput' to 'FormOutput'.
 form ::
@@ -492,7 +493,7 @@ data Design app = Design
   , parent :: Decorate app
   }
 
-designInput :: Design app -> Input app ty -> Attrs -> ty -> FormInput app ty
+designInput :: Design app -> Input app ty -> Attrs -> Maybe ty -> FormInput app ty
 designInput = FormInput . designDecorate
 
 data LabelPos = LabelBefore | LabelAfter
@@ -649,12 +650,12 @@ class Entry app ty where
     EntryAuxiliary app ty ->
     Maybe Text ->
     Attrs ->
-    ty ->
+    Maybe ty ->
     Compose (FormFor app) (FormInput app) ty
 
 entry ::
   (Entry app ty, Default (EntryAuxiliary app ty)) =>
-  (Maybe Text -> Attrs -> ty -> Compose (FormFor app) (FormInput app) ty)
+  (Maybe Text -> Attrs -> Maybe ty -> Compose (FormFor app) (FormInput app) ty)
 entry = entry' def
 
 instance
@@ -889,7 +890,7 @@ integralInput ::
   Maybe (WidgetFor app ()) ->
   Maybe Text ->
   Attrs ->
-  Select shape n ->
+  Maybe (Select shape n) ->
   FormInput app (Select shape n)
 integralInput pre l attrs value =
   designInput
@@ -930,7 +931,7 @@ doubleInput ::
   Maybe (WidgetFor app ()) ->
   Maybe Text ->
   Attrs ->
-  Select shape Double ->
+  Maybe (Select shape Double) ->
   FormInput app (Select shape Double)
 doubleInput pre l attrs value =
   designInput
@@ -968,7 +969,7 @@ instance (RenderMessage app FormMessage) => Entry app (Maybe Int) where
 instance (RenderMessage app FormMessage) => Entry app Int where
   type EntryAuxiliary app _ = ()
   entry' () l attrs val = Compose $ pure do
-    invmap runIdentity Identity $ integralInput Nothing l attrs (Identity val)
+    invmap runIdentity Identity $ integralInput Nothing l attrs (fmap Identity val)
 
 instance (RenderMessage app FormMessage) => Entry app (Maybe Integer) where
   type EntryAuxiliary app _ = ()
@@ -976,7 +977,7 @@ instance (RenderMessage app FormMessage) => Entry app (Maybe Integer) where
 instance (RenderMessage app FormMessage) => Entry app Integer where
   type EntryAuxiliary app _ = ()
   entry' () l attrs val = Compose $ pure do
-    invmap runIdentity Identity $ integralInput Nothing l attrs (Identity val)
+    invmap runIdentity Identity $ integralInput Nothing l attrs (fmap Identity val)
 
 instance (RenderMessage app FormMessage) => Entry app (Maybe Natural) where
   type EntryAuxiliary app _ = ()
@@ -984,7 +985,7 @@ instance (RenderMessage app FormMessage) => Entry app (Maybe Natural) where
 instance (RenderMessage app FormMessage) => Entry app Natural where
   type EntryAuxiliary app _ = ()
   entry' () l attrs val = Compose $ pure do
-    invmap runIdentity Identity $ integralInput Nothing l attrs (Identity val)
+    invmap runIdentity Identity $ integralInput Nothing l attrs (fmap Identity val)
 
 instance (RenderMessage app FormMessage) => Entry app (Maybe Double) where
   type EntryAuxiliary app _ = ()
@@ -992,7 +993,7 @@ instance (RenderMessage app FormMessage) => Entry app (Maybe Double) where
 instance (RenderMessage app FormMessage) => Entry app Double where
   type EntryAuxiliary app _ = ()
   entry' () l attrs val = Compose $ pure do
-    invmap runIdentity Identity $ doubleInput Nothing l attrs (Identity val)
+    invmap runIdentity Identity $ doubleInput Nothing l attrs (fmap Identity val)
 
 instance (RenderMessage app FormMessage) => Entry app Text where
   type EntryAuxiliary app _ = ()
@@ -1002,7 +1003,7 @@ instance (RenderMessage app FormMessage) => Entry app Text where
       Input
         { enctype = UrlEncoded
         , view = \a v -> do
-            [whamlet|<input type="text" *{a}>#{either (const "") id v}|]
+            [whamlet|<input type="text" *{a} value="#{either (const "") id v}">|]
         , parse = \myEnv _ -> pure case myEnv of
             [] -> Right ""
             [x] -> Right x
