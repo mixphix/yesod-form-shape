@@ -95,7 +95,7 @@ import GHC.Natural (Natural)
 import GHC.TypeError (ErrorMessage (Text), TypeError)
 import Network.HTTP.Types (Method, methodGet, methodPost)
 import Network.Wai (Request (requestMethod))
-import Prairie (Cases (Cases), Record (..), type (~>))
+import Prairie (Distributed (..), Record (..))
 import Text.Shakespeare.Text (st)
 import Yesod.Core
 import Yesod.Form
@@ -112,6 +112,7 @@ import Yesod.Form
   )
 import Yesod.Form.Functions (addClass)
 
+type (~>) f g = forall x. f x -> g x
 type Attrs = [(Text, Text)]
 
 tshow :: (Show x) => x -> Text
@@ -232,22 +233,22 @@ actionForm (Compose entryAction) = Compose (fmap (uncurry FormOutput) . runInput
 
 recordForm ::
   (Record rec, RenderMessage app FormMessage) =>
-  Cases rec (FormInput app) ->
-  FormFor app (FormResult rec, Cases rec (Const (WidgetFor app ())))
-recordForm (Cases input) =
-  sequenceRecordA (Cases $ form . input) <&> \(Cases exit) ->
-    ( tabulateRecordA $ Cases \f -> case exit f of FormOutput r _ -> r
-    , Cases \f -> case exit f of FormOutput _ w -> Const w
+  Distributed (FormInput app) rec ->
+  FormFor app (FormResult rec, Distributed (Const (WidgetFor app ())) rec)
+recordForm (Distributed input) =
+  sequenceRecordA (Distributed $ form . input) <&> \(Distributed exit) ->
+    ( tabulateRecordA \f -> case exit f of FormOutput r _ -> r
+    , Distributed \f -> case exit f of FormOutput _ w -> Const w
     )
 
 recordFormM ::
   (Record rec, RenderMessage app FormMessage) =>
-  Cases rec (Compose (FormFor app) (FormInput app)) ->
-  FormFor app (FormResult rec, Cases rec (Const (WidgetFor app ())))
-recordFormM (Cases input) =
-  sequenceRecordA (Cases $ actionForm . input) <&> \(Cases exit) ->
-    ( tabulateRecordA $ Cases \f -> case exit f of FormOutput r _ -> r
-    , Cases \f -> case exit f of FormOutput _ w -> Const w
+  Distributed (Compose (FormFor app) (FormInput app)) rec ->
+  FormFor app (FormResult rec, Distributed (Const (WidgetFor app ())) rec)
+recordFormM (Distributed input) =
+  sequenceRecordA (Distributed $ actionForm . input) <&> \(Distributed exit) ->
+    ( tabulateRecordA \f -> case exit f of FormOutput r _ -> r
+    , Distributed \f -> case exit f of FormOutput _ w -> Const w
     )
 
 data Shape
@@ -493,7 +494,8 @@ data Design app = Design
   , parent :: Decorate app
   }
 
-designInput :: Design app -> Input app ty -> Attrs -> Maybe ty -> FormInput app ty
+designInput ::
+  Design app -> Input app ty -> Attrs -> Maybe ty -> FormInput app ty
 designInput = FormInput . designDecorate
 
 data LabelPos = LabelBefore | LabelAfter
