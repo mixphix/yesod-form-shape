@@ -62,11 +62,11 @@ data MadLibs = MadLibs
 mkRecord ''MadLibs
 
 -- describe the entries of the form for each field individually
-madLibsForm :: FormFor App (FormResult MadLibs, Cases MadLibs (Const Widget))
-madLibsForm = recordFormM $ Cases \case
-  MadLibsAnimal1 -> entry Nothing [("name", "animal1")] Chicken
-  MadLibsAnimal2 -> entry Nothing [("name", "animal2")] Hamster
-  MadLibsVerb1 -> entry Nothing [("name", "verb1")] Jump
+madLibsForm :: FormFor App (FormResult MadLibs, Distributed (Const Widget) MadLibs)
+madLibsForm = recordFormM $ Distributed \case
+  MadLibsAnimal1 -> entry Nothing [("name", "animal1")] (Just Chicken)
+  MadLibsAnimal2 -> entry Nothing [("name", "animal2")] (Just Hamster)
+  MadLibsVerb1 -> entry Nothing [("name", "verb1")] (Just Jump)
   MadLibsCount1 ->
     entry
       Nothing
@@ -74,7 +74,7 @@ madLibsForm = recordFormM $ Cases \case
       , ("min", "1")
       , ("style", "width: 3em")
       ]
-      1
+      (Just 1)
   MadLibsCount2 ->
     entry
       Nothing
@@ -90,7 +90,7 @@ getShapeTestR = postShapeTestR
 postShapeTestR :: Handler Html
 postShapeTestR = do
   ((formResult, formWidget), enctype) <- Yesod.Form.Shape.runFormPost \csrf -> do
-    (result, Cases widget) <- madLibsForm
+    (result, Distributed widget) <- madLibsForm
     pure
       ( result
       , do
