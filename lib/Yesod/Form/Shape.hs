@@ -364,14 +364,19 @@ select ol =
                 NeedS -> (== runIdentity val)
                 ManyS -> flip elem (toList val)
                 FreeS -> flip elem val
+            blank :: Bool -> WidgetFor app () = \sel -> case shapeS @shape of
+              OmitS -> [whamlet|<option :sel:selected value>|]
+              _ -> mempty
         [whamlet|
           <select *{s <> attrs}>
             $case ol
               $of OptionList{olOptions}
+                ^{blank $ not $ any (selected . optionInternalValue) olOptions}
                 $forall o <- olOptions
                   <option :selected o.optionInternalValue:selected value="#{o.optionExternalValue}">
                     #{o.optionDisplay}
               $of OptionListGrouped{olOptionsGrouped}
+                ^{blank $ not $ any (selected . optionInternalValue) $ foldMap snd olOptionsGrouped}
                 $forall (group, ol) <- olOptionsGrouped
                   <optgroup label="#{group}">
                     $forall o <- ol
@@ -388,11 +393,12 @@ select ol =
               Just y -> Right y
         case shapeS @shape of
           OmitS -> pure case myEnv of
-            [] -> Right Nothing
+            [""] -> Right Nothing
             [x] -> Just <$> olRead x
             _ -> Left (SomeMessage $ MsgInvalidEntry "Duplicated")
           NeedS -> pure case myEnv of
             [] -> Left (SomeMessage MsgValueRequired)
+            [""] -> Left (SomeMessage MsgValueRequired)
             [x] -> Identity <$> olRead x
             _ -> Left (SomeMessage $ MsgInvalidEntry "Duplicated")
           ManyS -> pure case nonEmpty myEnv of
