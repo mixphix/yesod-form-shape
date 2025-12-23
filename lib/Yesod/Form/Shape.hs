@@ -538,8 +538,8 @@ designDecorate Design{..} = Decorate \(self.decorate -> w) -> parent.decorate do
   before
   let labelAttrs = addClass "form-label" label.attrs
   case label.labelPos of
-    Just (t, LabelBefore) -> [whamlet|<label *{labelAttrs}>#{t}|] <> w
-    Just (t, LabelAfter) -> w <> [whamlet|<label *{labelAttrs}>#{t}|]
+    Just (t, LabelBefore) -> label.self.decorate [whamlet|<label *{labelAttrs}>#{t}|] <> w
+    Just (t, LabelAfter) -> w <> label.self.decorate [whamlet|<label *{labelAttrs}>#{t}|]
     Nothing -> w
   after
 
