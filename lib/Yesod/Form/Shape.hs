@@ -1,4 +1,5 @@
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module Yesod.Form.Shape
   ( Attrs
@@ -116,6 +117,11 @@ import Yesod.Form.Functions (addClass)
 
 type (~>) f g = forall x. f x -> g x
 type Attrs = [(Text, Text)]
+
+instance ToWidget app (Const (WidgetFor app ()) a) where
+  toWidget ::
+    (MonadWidget m, HandlerSite m ~ app) => Const (WidgetFor app ()) a -> m ()
+  toWidget (Const w) = toWidget w
 
 tshow :: (Show x) => x -> Text
 tshow = Text.pack . show
@@ -696,61 +702,79 @@ instance
       (addClass "form-check-input" attrs)
       value
 
+fileDesign :: Maybe Text -> Design app
+fileDesign l =
+  Design
+    { label =
+        Label
+          (Just (fromMaybe "Choose file" l, LabelAfter))
+          [("class", "custom-file-label")]
+          mempty
+    , before = mempty
+    , self = mempty
+    , after = mempty
+    , parent = Decorate \w -> [whamlet|<div .custom-file>^{w}|]
+    }
+
 fileInput ::
   forall shape app.
   ( KnownShape shape
   , RenderMessage app FormMessage
   ) =>
-  Maybe Text ->
-  Attrs ->
-  FormFor app (FormInput app (Select shape FileInfo))
-fileInput l attrs = pure do
-  designInput
-    Design
-      { label =
-          Label
-            (Just (fromMaybe "Choose file" l, LabelAfter))
-            [("class", "custom-file-label")]
-            mempty
-      , before = mempty
-      , self = mempty
-      , after = mempty
-      , parent = Decorate \w -> [whamlet|<div .custom-file>^{w}|]
-      }
-    Input
-      { enctype = Multipart
-      , view = \a _ -> do
-          let Const s = shapeAttrs @shape
-          -- addScriptEither urlBootstrapCustomFileInputJs
-          toWidget [julius|$(document).ready(function() {bsCustomFileInput.init();});|]
-          [whamlet|<input *{s <> a} type="file">|]
-      , parse = \_ files -> pure $ case shapeS @shape of
-          OmitS -> case files of
-            [] -> Right Nothing
-            (i : _) -> Right (Just i)
-          NeedS -> case files of
-            [] -> Left (SomeMessage MsgValueRequired)
-            (i : _) -> Right (Identity i)
-          ManyS -> case files of
-            [] -> Left (SomeMessage MsgValueRequired)
-            (i : is) -> Right (i :| is)
-          FreeS -> Right files
-      }
-    (addClass "custom-file-input" attrs)
-    undefined
+  Input app (Select shape FileInfo)
+fileInput =
+  Input
+    { enctype = Multipart
+    , view = \a _ -> do
+        let Const s = shapeAttrs @shape
+        -- addScriptEither urlBootstrapCustomFileInputJs
+        toWidget [julius|$(document).ready(function() {bsCustomFileInput.init();});|]
+        [whamlet|<input *{s <> a} type="file">|]
+    , parse = \_ files -> pure $ case shapeS @shape of
+        OmitS -> case files of
+          [] -> Right Nothing
+          (i : _) -> Right (Just i)
+        NeedS -> case files of
+          [] -> Left (SomeMessage MsgValueRequired)
+          (i : _) -> Right (Identity i)
+        ManyS -> case files of
+          [] -> Left (SomeMessage MsgValueRequired)
+          (i : is) -> Right (i :| is)
+        FreeS -> Right files
+    }
 
 instance (RenderMessage app FormMessage) => Entry app (Maybe FileInfo) where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs _ = Compose $ fileInput l attrs
+  entry' () l attrs _ = Compose $ pure do
+    designInput
+      (fileDesign l)
+      fileInput
+      (addClass "custom-file-input" attrs)
+      undefined
 instance (RenderMessage app FormMessage) => Entry app FileInfo where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs _ = Compose $ invmap runIdentity Identity <$> fileInput l attrs
+  entry' () l attrs _ = Compose $ pure do
+    designInput
+      (fileDesign l)
+      (invmap runIdentity Identity fileInput)
+      (addClass "custom-file-input" attrs)
+      undefined
 instance (RenderMessage app FormMessage) => Entry app (NonEmpty FileInfo) where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs _ = Compose $ fileInput l attrs
+  entry' () l attrs _ = Compose $ pure do
+    designInput
+      (fileDesign l)
+      fileInput
+      (addClass "custom-file-input" attrs)
+      undefined
 instance (RenderMessage app FormMessage) => Entry app [FileInfo] where
   type EntryAuxiliary app _ = ()
-  entry' () l attrs _ = Compose $ fileInput l attrs
+  entry' () l attrs _ = Compose $ pure do
+    designInput
+      (fileDesign l)
+      fileInput
+      (addClass "custom-file-input" attrs)
+      undefined
 
 -- dateEntry ::
 --   forall shape app.
@@ -918,33 +942,6 @@ integralInput =
             myEnv
     }
 
-doubleInput ::
-  forall shape app.
-  ( KnownShape shape
-  , SingleShape shape
-  , RenderMessage app FormMessage
-  ) =>
-  Input app (Select shape Double)
-doubleInput =
-  Input
-    { enctype = UrlEncoded
-    , view = \a v -> do
-        let Const s = shapeAttrs @shape
-            val :: String = flip (either (const "")) v case shapeS @shape of
-              OmitS -> maybe "" show
-              NeedS -> show . runIdentity
-        [whamlet|<input type="number" *{s <> a} value="#{val}">|]
-    , parse = \myEnv _ -> pure case shapeS @shape of
-        OmitS ->
-          parse0WithNum
-            (either (const Nothing) (Just . fst) . Text.signed Text.double)
-            myEnv
-        NeedS ->
-          parse1WithNum
-            (either (const Nothing) (Just . Identity . fst) . Text.signed Text.double)
-            myEnv
-    }
-
 instance (RenderMessage app FormMessage) => Entry app (Maybe Int) where
   type EntryAuxiliary app _ = ()
   entry' () l attrs val = Compose $ pure do
@@ -995,6 +992,33 @@ instance (RenderMessage app FormMessage) => Entry app Natural where
       (invmap runIdentity Identity integralInput)
       attrs
       val
+
+doubleInput ::
+  forall shape app.
+  ( KnownShape shape
+  , SingleShape shape
+  , RenderMessage app FormMessage
+  ) =>
+  Input app (Select shape Double)
+doubleInput =
+  Input
+    { enctype = UrlEncoded
+    , view = \a v -> do
+        let Const s = shapeAttrs @shape
+            val :: String = flip (either (const "")) v case shapeS @shape of
+              OmitS -> maybe "" show
+              NeedS -> show . runIdentity
+        [whamlet|<input type="number" *{s <> a} value="#{val}">|]
+    , parse = \myEnv _ -> pure case shapeS @shape of
+        OmitS ->
+          parse0WithNum
+            (either (const Nothing) (Just . fst) . Text.signed Text.double)
+            myEnv
+        NeedS ->
+          parse1WithNum
+            (either (const Nothing) (Just . Identity . fst) . Text.signed Text.double)
+            myEnv
+    }
 
 instance (RenderMessage app FormMessage) => Entry app (Maybe Double) where
   type EntryAuxiliary app _ = ()
